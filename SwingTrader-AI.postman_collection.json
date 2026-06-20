@@ -1,0 +1,993 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "SwingTrader AI — Complete API",
+    "description": "Full REST API test suite for SwingTrader AI (MERN + Python FastAPI + Claude Sonnet).\n\n**Pre-flight:**\n1. Set `baseUrl` collection variable → `http://localhost:5000`\n2. `npm run dev` from `swing-trader/server/`\n3. `uvicorn app.main:app --port 8001` from `swing-trader/python-service/`\n4. MongoDB Atlas reachable (MONGODB_URI in server/.env)\n\n**Rate limits:**  Global 100 req/15 min · /api/chat 10 req/min",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000",
+      "type": "string",
+      "description": "Express server base URL"
+    },
+    {
+      "key": "symbol",
+      "value": "RELIANCE",
+      "type": "string",
+      "description": "NSE symbol used in parametrised routes"
+    },
+    {
+      "key": "tradeId",
+      "value": "",
+      "type": "string",
+      "description": "MongoDB ObjectId — copy from POST /api/trades response._id"
+    }
+  ],
+  "item": [
+    {
+      "name": "01 — Health",
+      "description": "Server liveness check. No auth, no DB required.",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Returns {success:true} when the Express process is up. Does NOT verify MongoDB or Python service."
+          },
+          "response": [
+            {
+              "name": "200 — Healthy",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\"success\":true,\"message\":\"Server is healthy\"}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 — Config",
+      "description": "Read/update the singleton Config document (capital, risk %, paper trade mode, etc.).",
+      "item": [
+        {
+          "name": "GET /api/config",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "config"]
+            },
+            "description": "Returns the entire Config document. 404 if not yet seeded."
+          },
+          "response": [
+            {
+              "name": "200 — Config retrieved",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"capital\": 1000000,\n    \"riskPercentage\": 1,\n    \"maxOpenTrades\": 3,\n    \"maxCapitalDeployedPct\": 60,\n    \"paperTradeMode\": true,\n    \"scannerEnabled\": true,\n    \"marketModeOverride\": false,\n    \"watchlist\": [\n      {\"symbol\": \"RELIANCE\", \"sector\": \"Energy\"},\n      {\"symbol\": \"ICICIBANK\", \"sector\": \"Banking\"}\n    ]\n  },\n  \"message\": \"Config retrieved\"\n}"
+            },
+            {
+              "name": "404 — Not seeded",
+              "status": "Not Found",
+              "code": 404,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\"success\":false,\"error\":\"Config not found — run db:seed first\",\"code\":404}"
+            }
+          ]
+        },
+        {
+          "name": "PATCH /api/config — disable paper trade",
+          "request": {
+            "method": "PATCH",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paperTradeMode\": false\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "config"]
+            },
+            "description": "Partial update — only provided fields are changed via $set. Switches paper trade OFF. Security: confirm with a 5-second countdown dialog in the UI before calling this."
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /api/config — update capital & risk",
+          "request": {
+            "method": "PATCH",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"capital\": 500000,\n  \"riskPercentage\": 0.5,\n  \"maxOpenTrades\": 3\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "config"]
+            },
+            "description": "capital min 10000 · riskPercentage 0.1–5 · maxOpenTrades 1–10"
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /api/config — set Telegram + email",
+          "request": {
+            "method": "PATCH",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"telegramChatId\": \"123456789\",\n  \"emailRecipient\": \"trader@example.com\"\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "config"]
+            },
+            "description": "Override alert destinations without restarting the server."
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /api/config — 400 validation error",
+          "request": {
+            "method": "PATCH",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"riskPercentage\": 99\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "config"]
+            },
+            "description": "riskPercentage max is 5 — Joi should reject 99."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "03 — Signals",
+      "description": "AI-generated trading signals from the Claude scan engine.",
+      "item": [
+        {
+          "name": "GET /api/signals — all (last 100)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/signals",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "signals"]
+            },
+            "description": "Returns the 100 most recent signals across all verdicts, newest first."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/signals?verdict=BUY",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/signals?verdict=BUY",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "signals"],
+              "query": [
+                {"key": "verdict", "value": "BUY", "description": "BUY | WAIT | SKIP"}
+              ]
+            },
+            "description": "Filter signals by verdict. Unknown verdict values are silently ignored (returns all)."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/signals?verdict=WAIT",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/signals?verdict=WAIT",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "signals"],
+              "query": [
+                {"key": "verdict", "value": "WAIT"}
+              ]
+            },
+            "description": "WAIT signals — stock passes gates but lacks a confident entry trigger."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/signals/active",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/signals/active",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "signals", "active"]
+            },
+            "description": "Returns signals where isActive=true AND verdict is BUY or WAIT (last 50). These are the signals shown on the dashboard live feed."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/signals/scan — trigger manual scan",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/signals/scan",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "signals", "scan"]
+            },
+            "description": "Fire-and-forget: returns 202 immediately. Scan runs in background over the full watchlist. Monitor socket events (scan:complete, signal:new) for progress. Does NOT bypass market-hours guard — use the test script with forceRun:true for off-hours testing."
+          },
+          "response": [
+            {
+              "name": "202 — Accepted",
+              "status": "Accepted",
+              "code": 202,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\"success\":true,\"data\":null,\"message\":\"Scan cycle started\"}"
+            }
+          ]
+        },
+        {
+          "name": "GET /api/signals/:symbol",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/signals/{{symbol}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "signals", "{{symbol}}"]
+            },
+            "description": "Signal history for one symbol (last 20). Uses the `symbol` collection variable — change it to target a different stock."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/signals/ICICIBANK",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/signals/ICICIBANK",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "signals", "ICICIBANK"]
+            },
+            "description": "Hardcoded variant for quick testing."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "04 — Trades",
+      "description": "Trade lifecycle: log entry → update price/SL → mark T1 → close. IMPORTANT: This platform NEVER places orders automatically. All trades are manually logged here for tracking and P&L calculation only.",
+      "item": [
+        {
+          "name": "GET /api/trades — all (last 50)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/trades",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "trades"]
+            },
+            "description": "Returns last 50 trades across all statuses."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/trades?status=OPEN",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/trades?status=OPEN",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "trades"],
+              "query": [
+                {"key": "status", "value": "OPEN", "description": "OPEN | CLOSED | EXPIRED | STOPPED"}
+              ]
+            },
+            "description": "Filter by status enum."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/trades/open",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/trades/open",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "trades", "open"]
+            },
+            "description": "Dedicated open-positions endpoint — used by the dashboard's positions panel. Returns all OPEN trades with latest unrealizedPnl."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/trades — log new trade",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"symbol\": \"RELIANCE\",\n  \"entryPrice\": 2915.50,\n  \"stopLoss\": 2850.00,\n  \"target1\": 3050.00,\n  \"target2\": 3150.00,\n  \"shares\": 34,\n  \"capitalDeployed\": 99127,\n  \"notes\": \"Breakout above 52-week high on 2× volume\"\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/trades",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "trades"]
+            },
+            "description": "Creates trade in OPEN status. riskReward is auto-computed from (target1-entryPrice)/(entryPrice-stopLoss). Copy the returned _id into the `tradeId` collection variable before calling PATCH endpoints."
+          },
+          "response": [
+            {
+              "name": "201 — Trade logged",
+              "status": "Created",
+              "code": 201,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"_id\": \"6660000000000000000000ab\",\n    \"symbol\": \"RELIANCE\",\n    \"status\": \"OPEN\",\n    \"entryPrice\": 2915.50,\n    \"stopLoss\": 2850.00,\n    \"target1\": 3050.00,\n    \"target2\": 3150.00,\n    \"shares\": 34,\n    \"capitalDeployed\": 99127,\n    \"riskReward\": 2.06,\n    \"unrealizedPnl\": 0,\n    \"unrealizedPnlPct\": 0\n  },\n  \"message\": \"Trade logged\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "POST /api/trades — 400 missing required fields",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"symbol\": \"RELIANCE\"\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/trades",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "trades"]
+            },
+            "description": "Should return 422 with Joi validation errors listing all missing required fields."
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /api/trades/:id — update price & SL",
+          "request": {
+            "method": "PATCH",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPrice\": 2968.00,\n  \"stopLoss\": 2900.00,\n  \"slTrailed\": true,\n  \"notes\": \"Trailing SL after 50-point move\"\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/trades/{{tradeId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "trades", "{{tradeId}}"]
+            },
+            "description": "Partial update on an OPEN trade. Setting currentPrice triggers unrealizedPnl / unrealizedPnlPct recomputation. Requires `tradeId` variable — copy from POST response._id."
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /api/trades/:id — 400 invalid ObjectId",
+          "request": {
+            "method": "PATCH",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPrice\": 2968.00\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/trades/not-a-valid-id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "trades", "not-a-valid-id"]
+            },
+            "description": "Should return 400 Invalid trade ID."
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /api/trades/:id/target1 — mark T1 hit",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/trades/{{tradeId}}/target1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "trades", "{{tradeId}}", "target1"]
+            },
+            "description": "Marks target1Hit=true, trails stopLoss to entryPrice (break-even), emits trade:target1 socket event, sends Telegram + email T1 alert. No request body needed."
+          },
+          "response": [
+            {
+              "name": "200 — T1 marked",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\"success\":true,\"data\":{\"target1Hit\":true,\"slTrailed\":true,\"stopLoss\":2915.50},\"message\":\"Target 1 marked — SL trailed to entry\"}"
+            }
+          ]
+        },
+        {
+          "name": "PATCH /api/trades/:id/close — close at target 2",
+          "request": {
+            "method": "PATCH",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"exitPrice\": 3148.00,\n  \"exitReason\": \"TARGET2\",\n  \"notes\": \"Full target achieved in 4 sessions\"\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/trades/{{tradeId}}/close",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "trades", "{{tradeId}}", "close"]
+            },
+            "description": "Closes the trade, computes realizedPnl and realizedPnlPct. exitReason must be one of: TARGET1 | TARGET2 | STOP_LOSS | MANUAL | TRAILING_SL | EARNINGS_EXIT. TARGET2 also sends a T2 congratulations alert."
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /api/trades/:id/close — stopped out",
+          "request": {
+            "method": "PATCH",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"exitPrice\": 2848.00,\n  \"exitReason\": \"STOP_LOSS\",\n  \"notes\": \"SL triggered — trend reversed\"\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/trades/{{tradeId}}/close",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "trades", "{{tradeId}}", "close"]
+            },
+            "description": "Close with a loss. realizedPnl will be negative."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "05 — Watchlist",
+      "description": "Manage the list of NSE stocks the scanner monitors every 15 minutes.",
+      "item": [
+        {
+          "name": "GET /api/watchlist",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/watchlist",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "watchlist"]
+            },
+            "description": "Returns the watchlist array from the Config document."
+          },
+          "response": [
+            {
+              "name": "200 — Watchlist",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"success\": true,\n  \"data\": [\n    {\"symbol\": \"RELIANCE\", \"sector\": \"Energy\"},\n    {\"symbol\": \"ICICIBANK\", \"sector\": \"Banking\"},\n    {\"symbol\": \"TATAMOTORS\", \"sector\": \"Auto\"}\n  ],\n  \"message\": \"3 stocks in watchlist\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "POST /api/watchlist — add stock",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"symbol\": \"HDFCBANK\",\n  \"sector\": \"Banking\"\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/watchlist",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "watchlist"]
+            },
+            "description": "Adds a stock to the watchlist. Symbol must be alphanumeric, 1–20 chars. sector is optional."
+          },
+          "response": [
+            {
+              "name": "201 — Added",
+              "status": "Created",
+              "code": 201,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\"success\":true,\"data\":{\"symbol\":\"HDFCBANK\",\"sector\":\"Banking\"},\"message\":\"HDFCBANK added to watchlist\"}"
+            }
+          ]
+        },
+        {
+          "name": "POST /api/watchlist — 409 duplicate",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"symbol\": \"RELIANCE\"\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/watchlist",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "watchlist"]
+            },
+            "description": "Adding an already-existing symbol returns 409 Conflict."
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /api/watchlist/:symbol",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/watchlist/HDFCBANK",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "watchlist", "HDFCBANK"]
+            },
+            "description": "Removes the stock. Symbol is uppercased automatically. Returns 404 if not found."
+          },
+          "response": [
+            {
+              "name": "200 — Removed",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\"success\":true,\"data\":null,\"message\":\"HDFCBANK removed from watchlist\"}"
+            }
+          ]
+        },
+        {
+          "name": "DELETE /api/watchlist/:symbol — 404 not found",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/watchlist/NONEXISTENT",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "watchlist", "NONEXISTENT"]
+            },
+            "description": "Symbol not in watchlist → 404."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "06 — Performance",
+      "description": "Aggregate statistics computed from the Trade collection.",
+      "item": [
+        {
+          "name": "GET /api/performance — summary",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/performance",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "performance"]
+            },
+            "description": "Returns win rate, total P&L, avg R:R, max drawdown, open position count, total deployed capital, total unrealized P&L, and cumulative Claude API cost in INR."
+          },
+          "response": [
+            {
+              "name": "200 — Performance summary",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"totalTrades\": 12,\n    \"winningTrades\": 8,\n    \"losingTrades\": 4,\n    \"winRate\": 66.67,\n    \"totalPnl\": 43250.00,\n    \"totalPnlPct\": 4.87,\n    \"avgRR\": 2.14,\n    \"maxDrawdown\": -1.23,\n    \"openPositions\": 2,\n    \"totalDeployed\": 185000.00,\n    \"unrealizedPnl\": 3120.00,\n    \"capital\": 1000000,\n    \"claudeApiCostTotal\": 0.1842\n  },\n  \"message\": \"Performance summary\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "GET /api/performance/history — last 12 months",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/performance/history",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "performance", "history"]
+            },
+            "description": "Monthly P&L aggregated from closed trades, plus cumulative capital growth curve. Default limit: 12 months."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/performance/history?limit=6",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/performance/history?limit=6",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "performance", "history"],
+              "query": [
+                {"key": "limit", "value": "6", "description": "1–36 months"}
+              ]
+            },
+            "description": "Limit to last 6 months of data."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "07 — News",
+      "description": "On-demand Google News RSS headlines + keyword sentiment for NSE stocks. Results are cached for 30 minutes (±5 min jitter).",
+      "item": [
+        {
+          "name": "GET /api/news/RELIANCE",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/news/RELIANCE",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "news", "RELIANCE"]
+            },
+            "description": "Returns { sentiment: POSITIVE|NEUTRAL|NEGATIVE, headlines: [...], score: N }. Network failures return NEUTRAL gracefully — Gate 8 is a soft gate."
+          },
+          "response": [
+            {
+              "name": "200 — News with sentiment",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"sentiment\": \"POSITIVE\",\n    \"headlines\": [\n      \"Reliance Industries Q4 profit beats estimates on Jio growth\",\n      \"RIL retail arm reports record revenue in FY25\"\n    ],\n    \"score\": 3\n  },\n  \"message\": \"News retrieved for RELIANCE (2 headlines)\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "GET /api/news/ICICIBANK",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/news/ICICIBANK",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "news", "ICICIBANK"]
+            },
+            "description": "Same endpoint for ICICIBANK."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/news/TATAMOTORS",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/news/TATAMOTORS",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "news", "TATAMOTORS"]
+            },
+            "description": "Same endpoint for TATAMOTORS."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/news/:symbol — 400 invalid symbol",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/news/BADSYM123456789012345",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "news", "BADSYM123456789012345"]
+            },
+            "description": "Symbol > 20 chars or containing digits fails /^[A-Z]{1,20}$/ regex → 400."
+          },
+          "response": [
+            {
+              "name": "400 — Invalid symbol",
+              "status": "Bad Request",
+              "code": 400,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\"success\":false,\"error\":\"Invalid symbol format\",\"code\":400}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 — Chat (Ask Claude)",
+      "description": "Dashboard chat widget powered by Claude Sonnet. Rate-limited to 10 requests per minute. Claude responds as a trading assistant — never makes specific buy/sell decisions.",
+      "item": [
+        {
+          "name": "POST /api/chat — basic question",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"What does a high VIX reading mean for swing trading?\"\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/chat",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "chat"]
+            },
+            "description": "Calls Claude Sonnet with a system prompt that constrains it to concise 2–4 sentence answers about Indian equity markets."
+          },
+          "response": [
+            {
+              "name": "200 — Chat response",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"reply\": \"A high VIX (above 20–25 on NSE) signals elevated implied volatility, meaning the market expects sharp moves. For swing traders this usually means wider stop losses are needed to avoid being shaken out, or it may be better to wait for volatility to compress before entering.\",\n    \"tokensUsed\": 187\n  },\n  \"message\": \"Chat response generated\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "POST /api/chat — with context",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"Should I trail my stop loss to entry after target 1 is hit?\",\n  \"context\": \"RELIANCE, BUY signal, RSI 52, entry 2915, T1 3050 hit\"\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/chat",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "chat"]
+            },
+            "description": "context is injected into the system prompt (max 200 chars) to give Claude current trade state."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/chat — 422 message too long",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"x\"\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/chat",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "chat"]
+            },
+            "description": "message min is 1 char (this passes). To test 422 send message as empty string \"\"."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "09 — Prices",
+      "description": "Receive live price ticks pushed from the frontend. Checks all open trades for each symbol and emits trade:sl_warning via WebSocket when price is within 2% above SL.",
+      "item": [
+        {
+          "name": "POST /api/prices/update — single symbol",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"prices\": [\n    {\"symbol\": \"RELIANCE\", \"currentPrice\": 2915.00}\n  ]\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/prices/update",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "prices", "update"]
+            },
+            "description": "Send a price tick for one symbol. If an open trade has SL at e.g. 2850 and current price is 2858 (within SL_WARNING_PCT=2%), a trade:sl_warning socket event is emitted and a Telegram/email SL warning is sent."
+          },
+          "response": [
+            {
+              "name": "200 — No warnings",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"symbolsChecked\": 1,\n    \"openTradesChecked\": 1,\n    \"warnings\": []\n  },\n  \"message\": \"0 SL warning(s) triggered\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "POST /api/prices/update — batch (5 symbols)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"prices\": [\n    {\"symbol\": \"RELIANCE\",   \"currentPrice\": 2915.00},\n    {\"symbol\": \"ICICIBANK\",  \"currentPrice\": 1247.50},\n    {\"symbol\": \"TATAMOTORS\", \"currentPrice\": 895.30},\n    {\"symbol\": \"HDFCBANK\",   \"currentPrice\": 1678.00},\n    {\"symbol\": \"INFY\",       \"currentPrice\": 1542.60}\n  ]\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/prices/update",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "prices", "update"]
+            },
+            "description": "Batch: 1–50 symbols per request. Efficient: one DB query fetches all open trades for all symbols."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/prices/update — 422 empty array",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"prices\": []\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/prices/update",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "prices", "update"]
+            },
+            "description": "prices array min=1 → Joi returns 422."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/prices/update — 422 exceed max (51 items)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"prices\": [\n    {\"symbol\": \"A1\", \"currentPrice\": 100},\n    {\"symbol\": \"A2\", \"currentPrice\": 100},\n    {\"symbol\": \"A3\", \"currentPrice\": 100},\n    {\"symbol\": \"A4\", \"currentPrice\": 100},\n    {\"symbol\": \"A5\", \"currentPrice\": 100},\n    {\"symbol\": \"A6\", \"currentPrice\": 100},\n    {\"symbol\": \"A7\", \"currentPrice\": 100},\n    {\"symbol\": \"A8\", \"currentPrice\": 100},\n    {\"symbol\": \"A9\", \"currentPrice\": 100},\n    {\"symbol\": \"B1\", \"currentPrice\": 100},\n    {\"symbol\": \"B2\", \"currentPrice\": 100},\n    {\"symbol\": \"B3\", \"currentPrice\": 100},\n    {\"symbol\": \"B4\", \"currentPrice\": 100},\n    {\"symbol\": \"B5\", \"currentPrice\": 100},\n    {\"symbol\": \"B6\", \"currentPrice\": 100},\n    {\"symbol\": \"B7\", \"currentPrice\": 100},\n    {\"symbol\": \"B8\", \"currentPrice\": 100},\n    {\"symbol\": \"B9\", \"currentPrice\": 100},\n    {\"symbol\": \"C1\", \"currentPrice\": 100},\n    {\"symbol\": \"C2\", \"currentPrice\": 100},\n    {\"symbol\": \"C3\", \"currentPrice\": 100},\n    {\"symbol\": \"C4\", \"currentPrice\": 100},\n    {\"symbol\": \"C5\", \"currentPrice\": 100},\n    {\"symbol\": \"C6\", \"currentPrice\": 100},\n    {\"symbol\": \"C7\", \"currentPrice\": 100},\n    {\"symbol\": \"C8\", \"currentPrice\": 100},\n    {\"symbol\": \"C9\", \"currentPrice\": 100},\n    {\"symbol\": \"D1\", \"currentPrice\": 100},\n    {\"symbol\": \"D2\", \"currentPrice\": 100},\n    {\"symbol\": \"D3\", \"currentPrice\": 100},\n    {\"symbol\": \"D4\", \"currentPrice\": 100},\n    {\"symbol\": \"D5\", \"currentPrice\": 100},\n    {\"symbol\": \"D6\", \"currentPrice\": 100},\n    {\"symbol\": \"D7\", \"currentPrice\": 100},\n    {\"symbol\": \"D8\", \"currentPrice\": 100},\n    {\"symbol\": \"D9\", \"currentPrice\": 100},\n    {\"symbol\": \"E1\", \"currentPrice\": 100},\n    {\"symbol\": \"E2\", \"currentPrice\": 100},\n    {\"symbol\": \"E3\", \"currentPrice\": 100},\n    {\"symbol\": \"E4\", \"currentPrice\": 100},\n    {\"symbol\": \"E5\", \"currentPrice\": 100},\n    {\"symbol\": \"E6\", \"currentPrice\": 100},\n    {\"symbol\": \"E7\", \"currentPrice\": 100},\n    {\"symbol\": \"E8\", \"currentPrice\": 100},\n    {\"symbol\": \"E9\", \"currentPrice\": 100},\n    {\"symbol\": \"F1\", \"currentPrice\": 100},\n    {\"symbol\": \"F2\", \"currentPrice\": 100},\n    {\"symbol\": \"F3\", \"currentPrice\": 100},\n    {\"symbol\": \"F4\", \"currentPrice\": 100},\n    {\"symbol\": \"F5\", \"currentPrice\": 100},\n    {\"symbol\": \"F6\", \"currentPrice\": 100}\n  ]\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/prices/update",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "prices", "update"]
+            },
+            "description": "51 items exceeds max=50 → 422."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "10 — OHLCV (Charts)",
+      "description": "Proxy to the Python FastAPI microservice. Returns OHLCV candles for TradingView-style charts. Unsupported period/interval values fall back silently to 60d / 15m.",
+      "item": [
+        {
+          "name": "GET /api/ohlcv/:symbol — default 60d 15m",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ohlcv/RELIANCE",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ohlcv", "RELIANCE"]
+            },
+            "description": "Fetches 60 calendar days of 15-minute candles for RELIANCE. Requires Python service running on port 8001."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/ohlcv/:symbol?period=30d&interval=1d",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ohlcv/TATAMOTORS?period=30d&interval=1d",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ohlcv", "TATAMOTORS"],
+              "query": [
+                {"key": "period", "value": "30d", "description": "5d | 15d | 30d | 60d | 90d | 6mo | 1y"},
+                {"key": "interval", "value": "1d", "description": "5m | 15m | 30m | 1h | 1d"}
+              ]
+            },
+            "description": "Daily candles for last 30 days — useful for the weekly chart view."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/ohlcv/:symbol?period=5d&interval=5m",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ohlcv/ICICIBANK?period=5d&interval=5m",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ohlcv", "ICICIBANK"],
+              "query": [
+                {"key": "period", "value": "5d"},
+                {"key": "interval", "value": "5m"}
+              ]
+            },
+            "description": "5-minute intraday candles for the last 5 days — intraday chart view."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/ohlcv/:symbol — 400 invalid symbol",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ohlcv/invalid123",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ohlcv", "invalid123"]
+            },
+            "description": "Symbol containing digits fails /^[A-Z]{1,20}$/ → 400."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "11 — Market Data",
+      "description": "Live Nifty 50, VIX, A/D ratio, and market mode — proxied from Python + merged with MongoDB Config.",
+      "item": [
+        {
+          "name": "GET /api/market",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/market",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "market"]
+            },
+            "description": "Returns: niftyPrice, niftyChange, niftyChangePct, vix, adRatio, bankNiftyPrice, marketMode (merged from Config.marketMode if set, else Python's computed value). Used by Gate 1 (Nifty below 20 EMA → block all BUY) and Gate 3 (VIX > 25 → block all BUY)."
+          },
+          "response": [
+            {
+              "name": "200 — Market data",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"niftyPrice\": 24250.45,\n    \"niftyChange\": 185.30,\n    \"niftyChangePct\": 0.77,\n    \"bankNiftyPrice\": 52340.10,\n    \"vix\": 13.8,\n    \"adRatio\": 0.68,\n    \"marketMode\": \"BULL\"\n  },\n  \"message\": \"Market data retrieved\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "12 — WebSocket Reference",
+      "description": "Socket.io events emitted by the server. These cannot be tested via HTTP — use the Socket.io test client or integrate with the React dashboard.\n\n**Connect:** socket.io client → http://localhost:5000\n\n**Events emitted by server:**\n\n| Event | Trigger | Payload |\n|---|---|---|\n| signal:new | New BUY/WAIT/SKIP signal saved | Signal document |\n| signal:update | Signal isActive toggled | { signalId, isActive } |\n| market:update | Market data refreshed | Market snapshot |\n| trade:target1 | PATCH /:id/target1 called | Trade document |\n| trade:target2 | Trade closed with TARGET2 | Trade document |\n| trade:sl_warning | Price within 2% above SL | { tradeId, symbol, currentPrice, stopLoss, distancePct } |\n| trade:earnings | Stock within 15 days of earnings | { symbol, daysToEarnings } |\n| market:bearmode | Nifty drops below 20 EMA | {} |\n| market:vixspike | VIX exceeds 25 | { vix } |\n| scan:complete | Full scan cycle finishes | { scanned, signals, timestamp } |\n\n**Quick test (browser console):**\n```javascript\nconst s = io('http://localhost:5000');\ns.onAny((event, data) => console.log(event, data));\n```",
+      "item": []
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+services:
+  mongo:
+    image: mongo:7.0
+    container_name: swing-trader-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    # Local dev DB — no auth for zero-friction local setup.
+    # (Container is only reachable on the host / internal docker network.)
+    # To re-enable auth, add MONGO_INITDB_ROOT_USERNAME / _PASSWORD here
+    # and restore credentials in the server MONGODB_URI below.
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    networks:
+      - swing-trader-net
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: swing-trader-server
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    env_file:
+      - ./server/.env
+    environment:
+      # Use the local docker mongo container (overrides whatever is in server/.env)
+      MONGODB_URI: mongodb://mongo:27017/swing-trader
+      PYTHON_SERVICE_URL: http://python-service:8001
+    depends_on:
+      mongo:
+        condition: service_healthy
+      python-service:
+        condition: service_healthy
+    volumes:
+      - ./server:/app
+      - /app/node_modules
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - swing-trader-net
+
+  python-service:
+    build:
+      context: ./python-service
+      dockerfile: Dockerfile
+    container_name: swing-trader-python
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    env_file:
+      - ./python-service/.env
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - swing-trader-net
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: swing-trader-client
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - server
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:80 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - swing-trader-net
+
+volumes:
+  mongo-data:
+    driver: local
+
+networks:
+  swing-trader-net:
+    driver: bridge

@@ -1,0 +1,41 @@
+{
+  "name": "swing-trader-server",
+  "version": "1.0.0",
+  "description": "SwingTrader AI — Node.js + Express 5 backend",
+  "type": "module",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node --watch src/app.js",
+    "db:seed": "node scripts/seed.js",
+    "db:seed:force": "FORCE_RESEED=true node scripts/seed.js",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write src/"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "axios": "^1.7.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^5.0.1",
+    "express-rate-limit": "^7.4.1",
+    "helmet": "^8.0.0",
+    "joi": "^17.13.3",
+    "mongoose": "^8.7.0",
+    "node-cron": "^3.0.3",
+    "node-telegram-bot-api": "^0.64.0",
+    "nodemailer": "^6.9.15",
+    "rss-parser": "^3.13.0",
+    "socket.io": "^4.8.1",
+    "winston": "^3.15.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.13.0",
+    "eslint": "^9.13.0",
+    "prettier": "^3.3.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

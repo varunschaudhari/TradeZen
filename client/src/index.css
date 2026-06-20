@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-surface text-slate-100 font-sans antialiased;
+  }
+  * {
+    @apply border-slate-700;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface-card rounded-xl border border-slate-700 p-4 shadow-lg;
+  }
+  .badge-buy {
+    @apply bg-buy text-white text-xs font-bold px-2 py-0.5 rounded uppercase tracking-wide;
+  }
+  .badge-wait {
+    @apply bg-wait text-black text-xs font-bold px-2 py-0.5 rounded uppercase tracking-wide;
+  }
+  .badge-skip {
+    @apply bg-skip text-white text-xs font-bold px-2 py-0.5 rounded uppercase tracking-wide;
+  }
+  .btn-primary {
+    @apply bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-colors;
+  }
+  .btn-danger {
+    @apply bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 rounded-lg transition-colors;
+  }
+  .input {
+    @apply bg-surface-elevated border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100
+           placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500
+           transition-colors w-full;
+  }
+  select.input {
+    @apply cursor-pointer;
+  }
+}
