@@ -55,6 +55,19 @@ export const marketApi = {
   get: () => api.get('/api/market'),
 };
 
+export const quotesApi = {
+  // symbols: string[] — returns { SYMBOL: { price, prevClose, change, changePct } }
+  get: (symbols) => api.get('/api/quotes', { params: { symbols: symbols.join(',') } }),
+};
+
+export const stockApi = {
+  getDetail: (symbol) => api.get(`/api/stock/${symbol}`),
+};
+
+export const universeApi = {
+  get: () => api.get('/api/universe'),
+};
+
 export const scanApi = {
   getLatest: () => api.get('/api/scan/latest'),
   getHistory: () => api.get('/api/scan/history'),

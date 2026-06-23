@@ -22,10 +22,18 @@
 
 import {
   BACKTEST_ENTRY_EMA20_BAND,
+  BACKTEST_HOLD_BUFFER,
   BACKTEST_HOLD_DAYS,
+  BACKTEST_HOLD_MAX_DAYS,
+  BACKTEST_HOLD_MIN_DAYS,
   BACKTEST_PERIOD,
   BACKTEST_SL_ATR_MULT,
   BACKTEST_WARMUP_BARS,
+  BB_OVERBOUGHT,
+  PROXIMITY_52W_HIGH_PCT,
+  RSI_MAX,
+  RSI_MIN,
+  SIMONS_POINTS,
 } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 import { fetchIndicatorSeries, fetchNiftySeries } from './pythonBridge.js';
@@ -109,7 +117,37 @@ function computeLevels(series, t) {
     t1: round2(entry + 2 * risk),
     t2: round2(entry + 3 * risk),
     risk,
+    atr: atr ?? null,
   };
+}
+
+/**
+ * Hold window (bars) for a trade. 'fixed' returns the flat baseline; 'linear' and
+ * 'adaptive' size the time-stop to the stock's velocity — how many days the move to T2
+ * should take given the stock's daily ATR.
+ *   linear   : days = (targetMove% ÷ atr%) × BUFFER   — assumes a clean directional trend
+ *   adaptive : days = (targetMove% ÷ atr%)²           — diffusion/random-walk (longer, more honest)
+ * Falls back to the fixed baseline when ATR is missing/zero, then clamps to [MIN, MAX].
+ *
+ * @param {object} levels - { entry, t2, atr }
+ * @param {'fixed'|'linear'|'adaptive'} mode
+ * @returns {number} bars to hold before a time exit
+ */
+function holdWindowDays(levels, mode) {
+  // Explicit fixed horizon: 'fixed' → BACKTEST_HOLD_DAYS; 'fixed:N' → exactly N bars
+  // (used for the short/medium/long horizon comparison — N is NOT clamped to [MIN,MAX]).
+  if (mode.startsWith('fixed')) {
+    const n = mode.includes(':') ? parseInt(mode.split(':')[1], 10) : NaN;
+    return Number.isFinite(n) ? n : BACKTEST_HOLD_DAYS;
+  }
+  const { entry, t2, atr } = levels;
+  if (!(atr > 0) || !(entry > 0) || t2 == null) return BACKTEST_HOLD_DAYS;
+  const targetPct = ((t2 - entry) / entry) * 100;
+  const atrPct = (atr / entry) * 100;
+  if (!(atrPct > 0)) return BACKTEST_HOLD_DAYS;
+  const ratio = targetPct / atrPct;
+  const raw = mode === 'linear' ? ratio * BACKTEST_HOLD_BUFFER : ratio * ratio;
+  return Math.round(Math.min(BACKTEST_HOLD_MAX_DAYS, Math.max(BACKTEST_HOLD_MIN_DAYS, raw)));
 }
 
 /**
@@ -118,7 +156,7 @@ function computeLevels(series, t) {
  * @param {object} series
  * @param {number} t
  * @param {Array<number|null>} niftyAligned
- * @returns {{ stockData: object, levels: object }}
+ * @returns {{ stockData: object, levels: object, simons: object }}
  */
 function buildStockAsOf(symbol, series, t, niftyAligned) {
   const ind = {
@@ -173,7 +211,50 @@ function buildStockAsOf(symbol, series, t, niftyAligned) {
     suggestedTarget2: levels.t2,
     ...simons.enrichment,
   };
-  return { stockData, levels };
+  return { stockData, levels, simons };
+}
+
+/**
+ * Derive the set of human-readable signal flags present on a trade — drawn from the
+ * Simons signal outputs, RSI/Bollinger bands, and gate tags. These are what the
+ * per-signal edge report groups by. Only price-derived signals are listed (external
+ * signals — FII/sector/P-C/PEAD/news/candle — are absent in backtest, so omitted).
+ *
+ * @param {object} simons - calculateSimonsSignals() output
+ * @param {object} gate - runAllGates() output (for gate-only tags)
+ * @param {object} ind - indicators { rsi14, bbPctB }
+ * @param {number|null} proximityPct - distance below 52-week high, %
+ * @returns {string[]}
+ */
+function extractSignalFlags(simons, gate, ind, proximityPct) {
+  const f = new Set();
+  const s = simons.signals ?? {};
+
+  if (s.relativeStrength?.category && s.relativeStrength.category !== 'UNKNOWN') {
+    f.add(`RS_${s.relativeStrength.category}`); // RS_STRONG_LEADER | RS_LEADER | RS_IN_LINE | RS_LAGGARD
+  }
+  const mom = s.momentum?.momentum6m;
+  if (mom != null) {
+    if (s.momentum.score >= SIMONS_POINTS.MOMENTUM_STRONG) f.add('MOM6M_STRONG');
+    f.add(mom > 0 ? 'MOM6M_POSITIVE' : 'MOM6M_NEGATIVE');
+  }
+  if (s.meanReversion?.active) f.add('MEAN_REVERSION');
+  if (s.volumeAnomaly?.anomaly) f.add('VOLUME_ANOMALY');
+  if (s.fiftyTwoWeekHigh?.is52WMomentum) f.add('FIFTYTWO_W_MOMENTUM');
+  if (proximityPct != null && proximityPct < PROXIMITY_52W_HIGH_PCT) f.add('NEAR_52W_HIGH');
+
+  const rsi = ind?.rsi14;
+  if (rsi != null) {
+    if (rsi > RSI_MAX) f.add('RSI_OVERBOUGHT');
+    else if (rsi < RSI_MIN) f.add('RSI_OVERSOLD');
+    else f.add('RSI_SWEET_SPOT');
+  }
+  if (ind?.bbPctB != null && ind.bbPctB > BB_OVERBOUGHT) f.add('BB_OVERBOUGHT');
+
+  for (const tag of gate?.tags ?? []) {
+    if (tag === 'VOLUME_UNCONFIRMED') f.add('VOLUME_UNCONFIRMED');
+  }
+  return [...f];
 }
 
 /**
@@ -185,17 +266,19 @@ function buildStockAsOf(symbol, series, t, niftyAligned) {
  * @param {object} series - Indicator series (needs open/high/low/close)
  * @param {number} signalIdx - Bar the signal fired on (entry is signalIdx + 1)
  * @param {object} levels - { sl, t1, t2, risk }
- * @returns {{ entry:number, exitIdx:number, reason:string, rMultiple:number }|null}
+ * @param {number} holdDays - max bars to hold before a time exit (from holdWindowDays)
+ * @returns {{ entry:number, exitIdx:number, reason:string, rMultiple:number, holdBars:number }|null}
  */
-function simulateTrade(series, signalIdx, levels) {
+function simulateTrade(series, signalIdx, levels, holdDays) {
   const entryIdx = signalIdx + 1;
   const n = series.close.length;
   if (entryIdx >= n) return null;
   const entry = series.open[entryIdx];
   if (entry == null) return null;
   const { sl, t1, t2, risk } = levels;
-  const last = Math.min(entryIdx + BACKTEST_HOLD_DAYS, n - 1);
+  const last = Math.min(entryIdx + holdDays, n - 1);
   const R = (price) => round2((price - entry) / risk);
+  const held = (exitIdx) => exitIdx - entryIdx + 1;
 
   let firstHalfR = null; // null until T1 books the first half
   let stop = sl;
@@ -211,6 +294,7 @@ function simulateTrade(series, signalIdx, levels) {
         exitIdx: k,
         reason: firstHalfR == null ? 'SL' : 'TRAIL',
         rMultiple: round2(r),
+        holdBars: held(k),
       };
     }
     if (firstHalfR == null && hi != null && hi >= t1) {
@@ -219,37 +303,51 @@ function simulateTrade(series, signalIdx, levels) {
       continue;
     }
     if (firstHalfR != null && hi != null && hi >= t2) {
-      return { entry, exitIdx: k, reason: 'T2', rMultiple: round2((firstHalfR + R(t2)) / 2) };
+      return {
+        entry,
+        exitIdx: k,
+        reason: 'T2',
+        rMultiple: round2((firstHalfR + R(t2)) / 2),
+        holdBars: held(k),
+      };
     }
   }
   const exitR = R(series.close[last]);
   const r = firstHalfR == null ? exitR : (firstHalfR + exitR) / 2;
-  return { entry, exitIdx: last, reason: 'TIME', rMultiple: round2(r) };
+  return { entry, exitIdx: last, reason: 'TIME', rMultiple: round2(r), holdBars: held(last) };
 }
 
 /**
- * Backtest one symbol: returns the list of simulated trades (Claude-eligible bars).
+ * Backtest one symbol across one or more hold-modes in a SINGLE data pass.
+ * The signal (gates + composite) is mode-independent, so it's computed once per bar and
+ * only the exit simulation re-runs per mode. Each mode keeps its own no-overlap cursor,
+ * so the three modes produce independent (and fairly comparable) trade streams.
+ *
  * @param {string} symbol
  * @param {{ dates: string[], closes: number[] }} niftySeries
- * @param {object} opts - { period }
- * @returns {Promise<object[]>}
+ * @param {object} opts - { period, modes: string[] }
+ * @returns {Promise<Record<string, object[]>>} mode → trades[]
  */
 async function backtestSymbol(symbol, niftySeries, opts) {
+  const modes = opts.modes ?? ['fixed'];
+  const out = Object.fromEntries(modes.map((m) => [m, []]));
   const data = await fetchIndicatorSeries(symbol, opts.period);
   if (!data?.series?.date?.length) {
     logger.warn(`Backtest: no data for ${symbol}`);
-    return [];
+    return out;
   }
   const series = data.series;
   const niftyAligned = alignByDate(series.date, niftySeries.dates, niftySeries.closes);
   const niftyEma20 = ema(niftyAligned, 20);
   const n = series.date.length;
-  const trades = [];
-  let openUntil = 0;
+  const openUntil = Object.fromEntries(modes.map((m) => [m, 0])); // per-mode no-overlap cursor
 
   for (let t = BACKTEST_WARMUP_BARS; t < n - 1; t += 1) {
-    if (t < openUntil || series.ema200[t] == null) continue;
-    const { stockData, levels } = buildStockAsOf(symbol, series, t, niftyAligned);
+    if (series.ema200[t] == null) continue;
+    const freeModes = modes.filter((m) => t >= openUntil[m]);
+    if (!freeModes.length) continue; // every mode is mid-trade here
+
+    const { stockData, levels, simons } = buildStockAsOf(symbol, series, t, niftyAligned);
     const market = {
       nifty50: {
         price: niftyAligned[t],
@@ -264,19 +362,30 @@ async function backtestSymbol(symbol, niftySeries, opts) {
     const gate = runAllGates(stockData, market, { sentiment: 'NEUTRAL', headlines: [] });
     if (!gate.shouldCallClaude || levels.entry <= levels.sl) continue;
 
-    const sim = simulateTrade(series, t, levels);
-    if (!sim) continue;
-    trades.push({
-      symbol,
-      date: series.date[t],
-      compositeScore: gate.compositeScore,
-      gatesPassed: gate.gatesPassed,
-      tags: gate.tags,
-      ...sim,
-    });
-    openUntil = sim.exitIdx + 1;
+    // Signal flags are entry-time facts → mode-independent; compute once, share across modes.
+    const proximityPct = stockData.high52w
+      ? ((stockData.high52w - series.close[t]) / stockData.high52w) * 100
+      : null;
+    const signalFlags = extractSignalFlags(simons, gate, stockData.indicators, proximityPct);
+
+    for (const mode of freeModes) {
+      const holdDays = holdWindowDays(levels, mode);
+      const sim = simulateTrade(series, t, levels, holdDays);
+      if (!sim) continue;
+      out[mode].push({
+        symbol,
+        date: series.date[t],
+        compositeScore: gate.compositeScore,
+        gatesPassed: gate.gatesPassed,
+        tags: gate.tags,
+        signalFlags,
+        plannedHold: holdDays,
+        ...sim,
+      });
+      openUntil[mode] = sim.exitIdx + 1;
+    }
   }
-  return trades;
+  return out;
 }
 
 /**
@@ -286,14 +395,16 @@ async function backtestSymbol(symbol, niftySeries, opts) {
  */
 function aggregate(trades) {
   const summarize = (list) => {
-    if (!list.length) return { trades: 0, winRate: 0, avgR: 0, expectancy: 0 };
+    if (!list.length) return { trades: 0, winRate: 0, avgR: 0, expectancy: 0, avgHold: 0 };
     const wins = list.filter((t) => t.rMultiple > 0).length;
     const sumR = list.reduce((s, t) => s + t.rMultiple, 0);
+    const sumHold = list.reduce((s, t) => s + (t.holdBars ?? 0), 0);
     return {
       trades: list.length,
       winRate: round2((wins / list.length) * 100),
       avgR: round2(sumR / list.length),
       expectancy: round2(sumR / list.length),
+      avgHold: round2(sumHold / list.length),
     };
   };
   const buckets = {
@@ -314,37 +425,104 @@ function aggregate(trades) {
 }
 
 /**
- * Run a walk-forward backtest over the given symbols.
+ * Per-signal edge: for each signal flag, compare trades WHERE it fired against the rest.
+ * `rLift` (avgR with − avgR without) is the marginal edge — positive means the signal
+ * adds expectancy, negative means it's dilutive (dragging the composite down).
  *
- * @param {string[]} symbols - NSE symbols to backtest
- * @param {object} [opts] - { period }
- * @returns {Promise<{ symbols: number, trades: number, overall: object, byScoreBucket: object, sample: object[] }>}
+ * @param {object[]} trades - trades carrying { rMultiple, signalFlags }
+ * @param {number} [minSample=30] - flags below this trade count are flagged low-confidence
+ * @returns {{ base: object, signals: object[] }}
  */
-export const runBacktest = async (symbols, opts = {}) => {
+function aggregateSignalEdge(trades, minSample = 30) {
+  const wr = (arr) => (arr.length ? round2((arr.filter((t) => t.rMultiple > 0).length / arr.length) * 100) : 0);
+  const ar = (arr) => (arr.length ? round2(arr.reduce((s, t) => s + t.rMultiple, 0) / arr.length) : 0);
+  const base = { n: trades.length, winRate: wr(trades), avgR: ar(trades) };
+
+  const flags = new Set();
+  for (const t of trades) for (const fl of t.signalFlags ?? []) flags.add(fl);
+
+  const signals = [];
+  for (const fl of flags) {
+    const withF = trades.filter((t) => (t.signalFlags ?? []).includes(fl));
+    const without = trades.filter((t) => !(t.signalFlags ?? []).includes(fl));
+    if (!withF.length || !without.length) continue;
+    signals.push({
+      signal: fl,
+      n: withF.length,
+      winRate: wr(withF),
+      avgR: ar(withF),
+      avgRWithout: ar(without),
+      rLift: round2(ar(withF) - ar(without)),
+      winLift: round2(wr(withF) - wr(without)),
+      enough: withF.length >= minSample,
+    });
+  }
+  signals.sort((a, b) => b.rLift - a.rLift);
+  return { base, signals };
+}
+
+/**
+ * Run a backtest for ONE hold mode and return the per-signal edge breakdown.
+ * Entries (and thus which signals fired) are mode-independent, but the R outcome
+ * depends on exits, so we fix the hold mode to the live-like default ('adaptive').
+ *
+ * @param {string[]} symbols
+ * @param {object} [opts] - { period, holdMode='adaptive', minSample }
+ * @returns {Promise<{ symbols:number, period:string, holdMode:string, trades:number, base:object, signals:object[] }>}
+ */
+export const runSignalEdge = async (symbols, opts = {}) => {
   const period = opts.period ?? BACKTEST_PERIOD;
+  const holdMode = opts.holdMode ?? 'adaptive';
   const niftySeries = await fetchNiftySeries(period);
-  if (!niftySeries.dates.length) logger.warn('Backtest: no Nifty series — RS/Gate1 degraded');
+  if (!niftySeries.dates.length) logger.warn('SignalEdge: no Nifty series — RS/Gate1 degraded');
 
   const all = [];
   for (const symbol of symbols) {
     try {
-      all.push(...(await backtestSymbol(symbol, niftySeries, { period })));
+      const res = await backtestSymbol(symbol, niftySeries, { period, modes: [holdMode] });
+      all.push(...res[holdMode]);
+    } catch (err) {
+      logger.error(`SignalEdge failed for ${symbol}`, { error: err.message });
+    }
+  }
+
+  const edge = aggregateSignalEdge(all, opts.minSample);
+  logger.info('Signal-edge complete', { symbols: symbols.length, holdMode, trades: all.length });
+  return { symbols: symbols.length, period, holdMode, trades: all.length, ...edge };
+};
+
+/**
+ * Run a walk-forward backtest over the given symbols, comparing one or more hold-modes
+ * in a single data pass (yfinance fetch is the bottleneck, so we fetch each symbol once).
+ *
+ * @param {string[]} symbols - NSE symbols to backtest
+ * @param {object} [opts] - { period, modes: ('fixed'|'linear'|'adaptive')[] }
+ * @returns {Promise<{ symbols: number, period: string, modes: string[], results: Record<string, object> }>}
+ */
+export const runBacktest = async (symbols, opts = {}) => {
+  const period = opts.period ?? BACKTEST_PERIOD;
+  const modes = opts.modes ?? (opts.holdMode ? [opts.holdMode] : ['fixed']);
+  const niftySeries = await fetchNiftySeries(period);
+  if (!niftySeries.dates.length) logger.warn('Backtest: no Nifty series — RS/Gate1 degraded');
+
+  const perMode = Object.fromEntries(modes.map((m) => [m, []]));
+  for (const symbol of symbols) {
+    try {
+      const res = await backtestSymbol(symbol, niftySeries, { period, modes });
+      for (const m of modes) perMode[m].push(...res[m]);
     } catch (err) {
       logger.error(`Backtest failed for ${symbol}`, { error: err.message });
     }
   }
 
-  const agg = aggregate(all);
+  const results = {};
+  for (const m of modes) {
+    results[m] = { trades: perMode[m].length, ...aggregate(perMode[m]), sample: perMode[m].slice(0, 5) };
+  }
   logger.info('Backtest complete', {
     symbols: symbols.length,
-    trades: all.length,
-    overall: agg.overall,
+    modes,
+    overall: Object.fromEntries(modes.map((m) => [m, results[m].overall])),
   });
-  return {
-    symbols: symbols.length,
-    trades: all.length,
-    period,
-    ...agg,
-    sample: all.slice(0, 10),
-  };
+  return { symbols: symbols.length, period, modes, results };
 };

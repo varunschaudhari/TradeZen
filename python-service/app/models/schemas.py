@@ -84,6 +84,34 @@ class AnalyzeResponse(BaseModel):
     errorCount: int
 
 
+class StockDetail(StockAnalysis):
+    """Full analysis for a single stock plus fundamental metadata — GET /stock/{symbol}."""
+
+    companyName: Optional[str] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    peRatio: Optional[float] = None
+    forwardPe: Optional[float] = None
+    marketCap: Optional[float] = None
+    beta: Optional[float] = None
+    dividendYield: Optional[float] = None
+
+
+class Quote(BaseModel):
+    """A lightweight live price snapshot for one symbol."""
+
+    price: Optional[float] = None
+    prevClose: Optional[float] = None
+    change: Optional[float] = None
+    changePct: Optional[float] = None
+
+
+class QuotesResponse(BaseModel):
+    """Response body for GET /quotes — batch price snapshots keyed by symbol."""
+
+    quotes: dict[str, Quote]
+
+
 class ScreenRequest(BaseModel):
     """Request body for POST /screen — universe pre-filtering (Step 2)."""
 

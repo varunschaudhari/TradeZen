@@ -3,126 +3,181 @@
  * @description Signal card showing verdict, indicators, gate count, and trade levels
  * @author SwingTrader AI Team
  * @created 2026-06-13
- * @lastModified 2026-06-13
+ * @lastModified 2026-06-23
  */
 
 import React, { useState } from 'react';
 import PropTypes from 'prop-types';
 import { formatCurrency, formatPercent, timeAgo } from '../utils/formatters.js';
-import { VERDICT_BG, GATE_NAMES } from '../utils/constants.js';
+import { GATE_NAMES, GATE_DESCRIPTIONS } from '../utils/constants.js';
 
-const GateRow = ({ name, passed, reason }) => (
-  <div className="flex items-start gap-2 text-xs">
+/* Verdict-driven visual treatment */
+const VERDICT_STYLES = {
+  BUY:  { accent: 'bg-buy',  ring: 'border-buy/40',   tint: 'bg-buy/[0.04]' },
+  WAIT: { accent: 'bg-wait', ring: 'border-wait/40',  tint: 'bg-wait/[0.04]' },
+  SKIP: { accent: 'bg-skip', ring: 'border-slate-700/70', tint: '' },
+};
+
+const CONFIDENCE_STYLES = {
+  HIGH:   'bg-buy/15 text-buy',
+  MEDIUM: 'bg-wait/15 text-wait',
+  LOW:    'bg-slate-700/50 text-slate-400',
+};
+
+const Level = ({ label, value, color = 'text-slate-100' }) => (
+  <div className="flex flex-col">
+    <span className="text-[10px] uppercase tracking-wide text-slate-500">{label}</span>
+    <span className={`font-mono text-sm font-medium tabular-nums ${color}`}>{value}</span>
+  </div>
+);
+Level.propTypes = { label: PropTypes.string, value: PropTypes.node, color: PropTypes.string };
+
+const GateRow = ({ name, passed, reason, hint }) => (
+  <div className="flex items-start gap-2 text-xs" title={reason || hint}>
     <span className={`mt-0.5 flex-shrink-0 ${passed ? 'text-bull' : 'text-bear'}`}>
       {passed ? '✓' : '✗'}
     </span>
-    <span className={`${passed ? 'text-slate-300' : 'text-slate-500 line-through'}`}>{name}</span>
+    <span className={`${passed ? 'text-slate-300' : 'text-slate-500 line-through'} cursor-help decoration-dotted underline-offset-2 hover:underline`}>
+      {name}
+    </span>
     {!passed && reason && <span className="text-slate-500 ml-auto text-right">{reason}</span>}
   </div>
 );
-
-GateRow.propTypes = {
-  name: PropTypes.string.isRequired,
-  passed: PropTypes.bool.isRequired,
-  reason: PropTypes.string,
-};
-
+GateRow.propTypes = { name: PropTypes.string.isRequired, passed: PropTypes.bool.isRequired, reason: PropTypes.string, hint: PropTypes.string };
 GateRow.defaultProps = { reason: '' };
 
-const SignalCard = ({ signal }) => {
+const SignalCard = ({ signal, quote, onPreview }) => {
   const [showGates, setShowGates] = useState(false);
-  const bgClass = VERDICT_BG[signal.verdict] ?? 'bg-surface-card border-slate-700';
+  const style = VERDICT_STYLES[signal.verdict] ?? VERDICT_STYLES.SKIP;
   const isBuy = signal.verdict === 'BUY';
   const isWait = signal.verdict === 'WAIT';
+  const gatesPassed = signal.gatesPassed ?? 0;
+  const changeUp = (quote?.changePct ?? 0) >= 0;
+  const rsi = signal.indicators?.rsi;
+  const rsiChip =
+    rsi == null ? 'bg-surface-elevated/60 text-slate-400'
+    : rsi > 65 ? 'bg-bear/15 text-bear'
+    : rsi < 40 ? 'bg-wait/15 text-wait'
+    : 'bg-buy/15 text-buy'; // 40–65 sweet spot
 
   return (
-    <div className={`card border ${bgClass} animate-fade-in`}>
+    <div className={`card relative overflow-hidden border ${style.ring} ${style.tint} animate-fade-in`}>
+      {/* Verdict accent bar */}
+      <span className={`absolute left-0 top-0 bottom-0 w-1 ${style.accent}`} />
+
       {/* Header */}
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-start justify-between mb-3 pl-1.5">
         <div>
-          <span className="font-mono font-bold text-lg">{signal.symbol}</span>
-          {signal.indicators?.rsi && (
-            <span className="ml-2 text-xs text-slate-400">RSI {signal.indicators.rsi.toFixed(1)}</span>
+          <div className="flex items-center gap-2">
+            <span className="font-mono font-bold text-lg text-slate-100">{signal.symbol}</span>
+            {rsi != null && (
+              <span className={`chip ${rsiChip}`} title="RSI 40–65 is the momentum sweet spot (Gate 4)">
+                RSI {rsi.toFixed(1)}
+              </span>
+            )}
+          </div>
+          {quote?.price != null && (
+            <div className="flex items-center gap-2 mt-1">
+              <span className="font-mono text-sm text-slate-200 tabular-nums">{formatCurrency(quote.price, 0)}</span>
+              {quote.changePct != null && (
+                <span className={`text-xs font-mono ${changeUp ? 'text-bull' : 'text-bear'}`}>
+                  {changeUp ? '▲' : '▼'} {formatPercent(quote.changePct)}
+                </span>
+              )}
+            </div>
           )}
         </div>
-        <span className={`badge-${signal.verdict?.toLowerCase()}`}>{signal.verdict}</span>
+        <div className="flex items-center gap-1.5">
+          {onPreview && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onPreview(signal.symbol); }}
+              title="Quick chart preview"
+              aria-label="Quick chart preview"
+              className="p-1 rounded-md text-slate-500 hover:text-slate-200 hover:bg-surface-elevated/60 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.9}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.5L9 8l3.75 3.5L21 4M21 4h-4.5M21 4v4.5M3.75 20.25h16.5" />
+              </svg>
+            </button>
+          )}
+          <span className={`badge-${signal.verdict?.toLowerCase()}`}>{signal.verdict}</span>
+        </div>
       </div>
 
-      {/* BUY — full entry/exit details */}
+      {/* BUY — entry/exit levels in a clean grid */}
       {isBuy && (
-        <div className="space-y-1.5 text-sm mb-3">
-          <div className="flex justify-between">
-            <span className="text-slate-400">Entry Zone</span>
-            <span className="font-mono text-xs">
-              {formatCurrency(signal.entryZone?.low)} – {formatCurrency(signal.entryZone?.high)}
-            </span>
+        <div className="pl-1.5 mb-3">
+          <div className="grid grid-cols-3 gap-y-3 gap-x-2 rounded-lg bg-surface-base/40 border border-slate-700/50 p-3">
+            <Level
+              label="Entry"
+              value={`${formatCurrency(signal.entryZone?.low, 0)}–${formatCurrency(signal.entryZone?.high, 0)}`}
+            />
+            <Level label="Stop" value={formatCurrency(signal.stopLoss, 0)} color="text-bear" />
+            <Level label="R:R" value={signal.riskReward ? `${signal.riskReward.toFixed(1)}:1` : '—'} color="text-accent-light" />
+            <Level label="Target 1" value={formatCurrency(signal.target1, 0)} color="text-bull" />
+            <Level label="Target 2" value={formatCurrency(signal.target2, 0)} color="text-bull" />
+            <Level label="Max Loss" value={formatCurrency(signal.maxLoss, 0)} color="text-bear" />
           </div>
-          <div className="flex justify-between">
-            <span className="text-slate-400">Stop Loss</span>
-            <span className="font-mono text-bear">{formatCurrency(signal.stopLoss)}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-400">Target 1</span>
-            <span className="font-mono text-bull">{formatCurrency(signal.target1)}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-400">Target 2</span>
-            <span className="font-mono text-bull">{formatCurrency(signal.target2)}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-400">R:R</span>
-            <span className="font-mono font-semibold">{signal.riskReward?.toFixed(1)}:1</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-400">Shares × Capital</span>
-            <span className="font-mono text-xs">
-              {signal.shares} × {formatCurrency(signal.capitalDeployed)}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-400">Max Loss</span>
-            <span className="font-mono text-bear text-xs">{formatCurrency(signal.maxLoss)}</span>
+          <div className="flex justify-between text-[11px] text-slate-500 mt-2 px-0.5">
+            <span>{signal.shares} shares</span>
+            <span>Deploys {formatCurrency(signal.capitalDeployed, 0)}</span>
           </div>
         </div>
       )}
 
       {/* WAIT — show condition only */}
       {isWait && signal.waitCondition && (
-        <p className="text-xs text-wait mb-3">
+        <p className="text-xs text-wait mb-3 pl-1.5">
           <span className="font-semibold">Wait for: </span>{signal.waitCondition}
         </p>
       )}
 
       {/* Reasoning snippet */}
       {signal.reasoning && (
-        <p className="text-xs text-slate-400 mb-3 line-clamp-2 italic">"{signal.reasoning}"</p>
+        <p className="text-xs text-slate-400 mb-3 pl-1.5 line-clamp-2 italic">&ldquo;{signal.reasoning}&rdquo;</p>
       )}
 
-      {/* Gate toggle */}
-      <button
-        onClick={() => setShowGates((v) => !v)}
-        className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
-      >
-        {signal.gatesPassed}/8 gates {showGates ? '▲' : '▼'}
-      </button>
+      {/* Gate progress + toggle */}
+      <div className="pl-1.5">
+        <button
+          onClick={(e) => { e.stopPropagation(); setShowGates((v) => !v); }}
+          className="w-full flex items-center gap-2 text-xs text-slate-500 hover:text-slate-300 transition-colors"
+        >
+          <span className="flex gap-0.5 flex-1">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <span
+                key={i}
+                className={`h-1.5 flex-1 rounded-full ${i < gatesPassed ? style.accent : 'bg-slate-700'}`}
+              />
+            ))}
+          </span>
+          <span className="font-mono whitespace-nowrap">{gatesPassed}/8</span>
+          <span>{showGates ? '▲' : '▼'}</span>
+        </button>
 
-      {showGates && signal.gateDetails && (
-        <div className="mt-2 space-y-1 border-t border-slate-700 pt-2">
-          {Object.entries(GATE_NAMES).map(([key, name]) => (
-            <GateRow
-              key={key}
-              name={name}
-              passed={signal.gateDetails[key]?.passed ?? false}
-              reason={signal.gateDetails[key]?.reason}
-            />
-          ))}
-        </div>
-      )}
+        {showGates && signal.gateDetails && (
+          <div className="mt-2 space-y-1 border-t border-slate-700/60 pt-2">
+            {Object.entries(GATE_NAMES).map(([key, name]) => (
+              <GateRow
+                key={key}
+                name={name}
+                passed={signal.gateDetails[key]?.passed ?? false}
+                reason={signal.gateDetails[key]?.reason}
+                hint={GATE_DESCRIPTIONS[key]}
+              />
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Footer */}
-      <div className="mt-3 pt-2 border-t border-slate-700 flex items-center justify-between text-xs text-slate-500">
-        <span className="capitalize">{signal.confidence?.toLowerCase()} confidence</span>
-        <span>{timeAgo(signal.createdAt)}</span>
+      <div className="mt-3 pt-2 pl-1.5 border-t border-slate-700/60 flex items-center justify-between text-xs">
+        {signal.confidence ? (
+          <span className={`chip ${CONFIDENCE_STYLES[signal.confidence] ?? 'text-slate-500'}`}>
+            {signal.confidence} confidence
+          </span>
+        ) : <span />}
+        <span className="text-slate-500">{timeAgo(signal.createdAt)}</span>
       </div>
     </div>
   );
@@ -149,6 +204,13 @@ SignalCard.propTypes = {
     waitCondition: PropTypes.string,
     createdAt: PropTypes.string,
   }).isRequired,
+  quote: PropTypes.shape({
+    price: PropTypes.number,
+    changePct: PropTypes.number,
+  }),
+  onPreview: PropTypes.func,
 };
+
+SignalCard.defaultProps = { quote: null, onPreview: null };
 
 export default SignalCard;

@@ -22,6 +22,18 @@ export const GATE_NAMES = Object.freeze({
   gate8: 'News sentiment not negative',
 });
 
+// Plain-language explanation of what each gate protects against (used as hover tooltips).
+export const GATE_DESCRIPTIONS = Object.freeze({
+  gate1: 'Hard block. The whole market must be in an uptrend — Nifty 50 above its 20-day EMA — or no BUYs are allowed.',
+  gate2: 'Hard block. The stock itself must be in a bullish weekly trend (above its weekly 50 EMA).',
+  gate3: 'Hard block. No earnings announcement within 15 days — earnings cause unpredictable gaps.',
+  gate4: 'Strong filter. RSI in the 40–65 sweet spot: enough momentum, not overbought.',
+  gate5: 'Strong filter. Volume at least 1.5× the 20-day average — confirms institutional participation.',
+  gate6: 'Hard block. The setup must offer at least 2× reward for the risk taken (R:R ≥ 2:1).',
+  gate7: 'Hard block. Claude must return HIGH confidence — MEDIUM/LOW is downgraded to WAIT.',
+  gate8: 'Hard block. No negative news environment around the stock.',
+});
+
 export const VERDICT_COLORS = Object.freeze({
   BUY: 'text-buy',
   WAIT: 'text-wait',

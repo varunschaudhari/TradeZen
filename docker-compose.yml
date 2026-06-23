@@ -3,8 +3,11 @@ services:
     image: mongo:7.0
     container_name: swing-trader-mongo
     restart: unless-stopped
+    # Host 27018 (not 27017) so this dev DB doesn't collide with a native MongoDB
+    # already bound to 27017 on the host. The app reaches mongo via the internal
+    # docker network (mongo:27017), so this host port is only for GUI tools (Compass).
     ports:
-      - "27017:27017"
+      - "27018:27017"
     # Local dev DB — no auth for zero-friction local setup.
     # (Container is only reachable on the host / internal docker network.)
     # To re-enable auth, add MONGO_INITDB_ROOT_USERNAME / _PASSWORD here
@@ -32,7 +35,7 @@ services:
       - ./server/.env
     environment:
       # Use the local docker mongo container (overrides whatever is in server/.env)
-      MONGODB_URI: mongodb://mongo:27017/swing-trader
+      MONGODB_URI: mongodb://mongo:27017/tradezen
       PYTHON_SERVICE_URL: http://python-service:8001
     depends_on:
       mongo:

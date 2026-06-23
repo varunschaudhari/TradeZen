@@ -232,9 +232,18 @@ export const SCAN_RESULT_TTL_SECONDS = 14 * 24 * 60 * 60; // keep scan snapshots
 // Backtesting (Flow — backtestEngine.js)
 export const BACKTEST_PERIOD = '2y'; // history window pulled per symbol
 export const BACKTEST_WARMUP_BARS = 200; // skip until EMA200 + RS lookbacks are valid
-export const BACKTEST_HOLD_DAYS = 10; // max bars held before a time-based exit
+export const BACKTEST_HOLD_DAYS = 10; // fixed-mode: max bars held before a time-based exit
 export const BACKTEST_SL_ATR_MULT = 1.5; // fallback stop = entry − ATR×mult
 export const BACKTEST_ENTRY_EMA20_BAND = 0.05; // use EMA20 as entry if within 5% of price
+
+// ATR-adaptive hold window (Flow — backtestEngine.js, holdMode='adaptive'|'linear')
+// Sizes the time-stop to each trade's velocity instead of a flat 10 bars.
+//   linear   : days = (targetMove% / atr%) × buffer        (clean-trend assumption)
+//   adaptive : days = (targetMove% / atr%)²                (random-walk/diffusion; longer)
+// targetMove% is the distance to T2 for that trade (R-based, so it varies per trade).
+export const BACKTEST_HOLD_MIN_DAYS = 3; // never time-stop sooner than this
+export const BACKTEST_HOLD_MAX_DAYS = 30; // never hold a swing longer than this
+export const BACKTEST_HOLD_BUFFER = 1.4; // linear-mode choppiness buffer (1.3–1.5×)
 
 // Trade tracking (Flow 9 — tradeTracker.js)
 export const EARNINGS_EXIT_REMINDER_DAYS = 5; // remind to exit N days before earnings

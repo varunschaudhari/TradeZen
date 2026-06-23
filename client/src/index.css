@@ -4,17 +4,27 @@
 
 @layer base {
   body {
-    @apply bg-surface text-slate-100 font-sans antialiased;
+    @apply bg-surface-base text-slate-100 font-sans antialiased;
   }
   * {
     @apply border-slate-700;
   }
+  /* Refined scrollbars — unobtrusive, on-brand */
+  ::-webkit-scrollbar { @apply w-2 h-2; }
+  ::-webkit-scrollbar-track { @apply bg-transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-slate-700 rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-slate-600; }
 }
 
 @layer components {
   .card {
-    @apply bg-surface-card rounded-xl border border-slate-700 p-4 shadow-lg;
+    @apply bg-surface-card rounded-xl border border-slate-700/70 p-4 shadow-tile;
   }
+  /* Card that responds to hover — for clickable signal cards, KPI tiles */
+  .card-interactive {
+    @apply transition-all duration-150 hover:border-slate-600 hover:bg-surface-hover/40 cursor-pointer;
+  }
+
   .badge-buy {
     @apply bg-buy text-white text-xs font-bold px-2 py-0.5 rounded uppercase tracking-wide;
   }
@@ -24,15 +34,46 @@
   .badge-skip {
     @apply bg-skip text-white text-xs font-bold px-2 py-0.5 rounded uppercase tracking-wide;
   }
+
+  /* Buttons */
   .btn-primary {
-    @apply bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-colors;
+    @apply bg-accent hover:bg-accent-dark text-white font-medium px-4 py-2 rounded-lg transition-colors
+           disabled:opacity-50 disabled:cursor-not-allowed;
   }
   .btn-danger {
     @apply bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 rounded-lg transition-colors;
   }
+  .btn-ghost {
+    @apply bg-surface-elevated/70 hover:bg-surface-elevated text-slate-200 font-medium px-3 py-1.5
+           rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed
+           border border-slate-700/70;
+  }
+  .btn-success {
+    @apply bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-3 py-1.5 rounded-lg
+           transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  /* Segmented control / filter tabs */
+  .seg-group {
+    @apply inline-flex items-center gap-1 bg-surface-card border border-slate-700/70 rounded-lg p-1;
+  }
+  .seg {
+    @apply px-3 py-1 text-xs font-medium rounded-md text-slate-400 hover:text-slate-200
+           transition-colors whitespace-nowrap;
+  }
+  .seg-active {
+    @apply bg-surface-elevated text-slate-100 shadow-sm;
+  }
+
+  /* Small status chip */
+  .chip {
+    @apply inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold
+           uppercase tracking-wide;
+  }
+
   .input {
     @apply bg-surface-elevated border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100
-           placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500
+           placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-accent
            transition-colors w-full;
   }
   select.input {

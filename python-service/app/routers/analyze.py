@@ -29,9 +29,17 @@ from app.models.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
     MarketResponse,
+    Quote,
+    QuotesResponse,
     StockAnalysis,
+    StockDetail,
 )
-from app.services.data_fetcher import fetch_ohlcv, fetch_ticker_info, fetch_weekly_ohlcv
+from app.services.data_fetcher import (
+    batch_fetch_latest_close,
+    fetch_ohlcv,
+    fetch_ticker_info,
+    fetch_weekly_ohlcv,
+)
 from app.services.indicators import compute_indicator_series, compute_indicators
 from app.services.market_data import fetch_index_series, fetch_market_overview
 from app.services.universe import list_symbols
@@ -291,6 +299,71 @@ async def analyze_stocks(request: AnalyzeRequest) -> AnalyzeResponse:
         results=results,
         analyzedCount=len(results),
         errorCount=error_count,
+    )
+
+
+@router.get("/quotes", response_model=QuotesResponse)
+async def get_quotes(symbols: str) -> QuotesResponse:
+    """
+    Batch live price snapshot for a comma-separated list of NSE symbols.
+
+    One yfinance download for the whole list (cheap) — powers the live price and
+    day-change shown on dashboard signal cards. Price is the latest daily close;
+    during market hours it may lag the live tick by a few minutes.
+
+    Args:
+        symbols: Comma-separated NSE symbols without suffix (e.g. 'RELIANCE,TCS')
+    """
+    requested = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not requested:
+        return QuotesResponse(quotes={})
+
+    closes = batch_fetch_latest_close(requested)
+    quotes: dict[str, Quote] = {}
+    for sym in requested:
+        pair = closes.get(sym)
+        if not pair:
+            quotes[sym] = Quote()
+            continue
+        latest, prev = pair
+        change = latest - prev if prev else None
+        change_pct = (change / prev * 100) if prev else None
+        quotes[sym] = Quote(
+            price=round(latest, 2),
+            prevClose=round(prev, 2) if prev else None,
+            change=round(change, 2) if change is not None else None,
+            changePct=round(change_pct, 2) if change_pct is not None else None,
+        )
+
+    logger.info("Quotes served for %d/%d symbols", sum(1 for q in quotes.values() if q.price), len(requested))
+    return QuotesResponse(quotes=quotes)
+
+
+@router.get("/stock/{symbol}", response_model=StockDetail)
+async def get_stock_detail(symbol: str) -> StockDetail:
+    """
+    Full on-demand analysis for a single stock plus fundamental metadata
+    (P/E, market cap, sector, beta). Backs the dedicated stock detail page.
+
+    Args:
+        symbol: NSE symbol without suffix (e.g. 'RELIANCE')
+    """
+    symbol = symbol.strip().upper()
+    analysis = await _analyze_single_stock(symbol, 1_000_000, 1.0)
+    if analysis.error and analysis.currentPrice is None:
+        raise HTTPException(status_code=404, detail=f"No data for {symbol}: {analysis.error}")
+
+    info = fetch_ticker_info(symbol)
+    return StockDetail(
+        **analysis.model_dump(),
+        companyName=info.get("company_name"),
+        sector=info.get("sector"),
+        industry=info.get("industry"),
+        peRatio=info.get("trailing_pe"),
+        forwardPe=info.get("forward_pe"),
+        marketCap=info.get("market_cap"),
+        beta=info.get("beta"),
+        dividendYield=info.get("dividend_yield"),
     )
 
 

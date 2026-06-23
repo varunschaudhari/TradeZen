@@ -25,7 +25,11 @@ const useCandleData = (symbol, period = '60d', interval = '15m') => {
     ohlcvApi
       .get(symbol, period, interval)
       .then((res) => {
-        if (!cancelled) setCandles(res.data ?? []);
+        // Route returns { success, data: { symbol, interval, data: [...] } }; the
+        // candle array lives at res.data.data. Tolerate a bare array too.
+        const payload = res?.data;
+        const arr = Array.isArray(payload) ? payload : payload?.data ?? [];
+        if (!cancelled) setCandles(arr);
       })
       .catch((err) => {
         if (!cancelled) setError(err.message);

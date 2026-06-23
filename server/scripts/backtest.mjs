@@ -1,10 +1,17 @@
 /**
  * @file backtest.mjs
- * @description Run the walk-forward backtester over a symbol list and print win rate /
- *              expectancy overall and by composite-score bucket (threshold calibration).
+ * @description Run the walk-forward backtester over a symbol list and compare hold-window
+ *              strategies side by side: fixed 10-bar vs ATR-adaptive time-stops.
+ *                - fixed   : flat BACKTEST_HOLD_DAYS bars
+ *                - linear  : days = (targetMove% / atr%) × buffer   (clean-trend assumption)
+ *                - adaptive: days = (targetMove% / atr%)²           (diffusion/random-walk)
+ *              All three run in ONE data pass (yfinance is fetched once per symbol).
  *              Usage (inside the server container):
- *                node scripts/backtest.mjs RELIANCE,TCS,ICICIBANK [period]
- *                node scripts/backtest.mjs            # uses the seeded watchlist
+ *                node scripts/backtest.mjs RELIANCE,TCS,ICICIBANK [period] [modes]
+ *                node scripts/backtest.mjs UNIVERSE 2y     # full ~270-symbol universe (slow)
+ *                node scripts/backtest.mjs                 # uses the seeded watchlist
+ *              modes (4th arg, comma-separated) default to: fixed,linear,adaptive
+ *                horizon comparison: ... 2y fixed:3,fixed:10,fixed:25
  * @author TradeZen Team
  */
 
@@ -15,6 +22,9 @@ import { runBacktest } from '../src/services/backtestEngine.js';
 import { fetchUniverse } from '../src/services/pythonBridge.js';
 
 const period = process.argv[3] || '2y';
+const MODES = process.argv[4] ? process.argv[4].split(',') : ['fixed', 'linear', 'adaptive'];
+
+const pct = (n) => `${String(n).padStart(6)}%`;
 
 const run = async () => {
   await connectDB();
@@ -28,21 +38,42 @@ const run = async () => {
     const cfg = await Config.findOne().lean();
     symbols = (cfg?.watchlist ?? []).map((w) => w.symbol);
   }
-  console.log(`\n▶ Backtesting ${symbols.length} symbols over ${period}: ${symbols.join(', ')}\n`);
+  console.log(`\n▶ Backtesting ${symbols.length} symbols over ${period} — comparing hold modes: ${MODES.join(', ')}\n`);
 
-  const res = await runBacktest(symbols, { period });
+  const res = await runBacktest(symbols, { period, modes: MODES });
 
-  console.log('=== OVERALL ===');
-  console.log(JSON.stringify(res.overall, null, 2));
-  console.log('\n=== WIN RATE BY COMPOSITE SCORE (threshold calibration) ===');
-  for (const [bucket, m] of Object.entries(res.byScoreBucket)) {
+  // ── Overall comparison ──────────────────────────────────────────────────────
+  console.log('=== OVERALL (by hold mode) ===');
+  console.log('  mode      trades   winRate     avgR   avgHold(bars)');
+  for (const m of MODES) {
+    const o = res.results[m].overall;
     console.log(
-      `  ${bucket.padEnd(6)} trades=${String(m.trades).padStart(4)}  winRate=${String(m.winRate).padStart(6)}%  avgR=${m.avgR}`
+      `  ${m.padEnd(9)} ${String(o.trades).padStart(5)}   ${pct(o.winRate)}   ${String(o.avgR).padStart(6)}   ${String(o.avgHold).padStart(6)}`
     );
   }
-  console.log('\n=== EXIT REASONS ===');
-  console.log('  ' + JSON.stringify(res.byExitReason));
-  console.log(`\nTotal simulated trades: ${res.trades} across ${res.symbols} symbols (${period})`);
+
+  // ── Exit-reason mix (where TIME exits should shrink) ─────────────────────────
+  console.log('\n=== EXIT REASONS (by hold mode) ===');
+  console.log('  mode          T2   TRAIL     SL    TIME');
+  for (const m of MODES) {
+    const e = res.results[m].byExitReason;
+    console.log(
+      `  ${m.padEnd(9)} ${String(e.T2).padStart(5)}  ${String(e.TRAIL).padStart(5)}  ${String(e.SL).padStart(5)}  ${String(e.TIME).padStart(6)}`
+    );
+  }
+
+  // ── Score-bucket calibration (does score predict winners, in any hold mode?) ──
+  console.log('\n=== WIN RATE BY COMPOSITE SCORE × HOLD MODE ===');
+  for (const m of MODES) {
+    console.log(`  [${m}]`);
+    for (const [bucket, b] of Object.entries(res.results[m].byScoreBucket)) {
+      console.log(
+        `    ${bucket.padEnd(6)} trades=${String(b.trades).padStart(4)}  winRate=${pct(b.winRate)}  avgR=${String(b.avgR).padStart(6)}`
+      );
+    }
+  }
+
+  console.log(`\nSymbols: ${res.symbols}   Period: ${res.period}`);
 
   await mongoose.disconnect();
   process.exit(0);

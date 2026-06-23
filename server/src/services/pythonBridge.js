@@ -265,12 +265,52 @@ export const fetchUniverse = async () => {
 export const fetchIndicatorSeries = async (symbol, period = '2y') => {
   try {
     const response = await withRetry(() =>
-      pythonClient.get(`/indicator-series/${symbol}`, { params: { period }, timeout: 60_000 })
+      pythonClient.get(`/indicator-series/${symbol}`, { params: { period }, timeout: 120_000 })
     );
     return response.data;
   } catch (err) {
     logger.error('Python /indicator-series failed', { symbol, error: axiosErrMsg(err) });
     return null;
+  }
+};
+
+/**
+ * GET /quotes — batch live price snapshot for a list of NSE symbols.
+ * Returns {} on failure so dashboard cards degrade to "no live price" instead of erroring.
+ *
+ * @param {string[]} symbols - NSE symbols without suffix
+ * @returns {Promise<Record<string, { price: number|null, prevClose: number|null, change: number|null, changePct: number|null }>>}
+ */
+export const fetchQuotes = async (symbols) => {
+  if (!symbols?.length) return {};
+  try {
+    const response = await withRetry(() =>
+      pythonClient.get('/quotes', { params: { symbols: symbols.join(',') }, timeout: 20_000 })
+    );
+    return response.data?.quotes ?? {};
+  } catch (err) {
+    logger.warn('Python /quotes failed — cards will show no live price', { error: axiosErrMsg(err) });
+    return {};
+  }
+};
+
+/**
+ * GET /stock/:symbol — full on-demand analysis + fundamentals (P/E, market cap, sector)
+ * for the dedicated stock detail page.
+ *
+ * @param {string} symbol - NSE symbol (without .NS)
+ * @returns {Promise<object>} StockDetail object
+ */
+export const fetchStockDetail = async (symbol) => {
+  try {
+    const response = await withRetry(() =>
+      pythonClient.get(`/stock/${symbol}`, { timeout: 30_000 })
+    );
+    return response.data;
+  } catch (err) {
+    const msg = axiosErrMsg(err);
+    logger.error('Python /stock failed', { symbol, error: msg });
+    throw new Error(`Stock detail unavailable for ${symbol}: ${msg}`);
   }
 };
 

@@ -11,6 +11,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext.jsx';
 import Layout from './components/Layout.jsx';
 import Dashboard from './pages/Dashboard.jsx';
+import StockDetail from './pages/StockDetail.jsx';
 import Signals from './pages/Signals.jsx';
 import ScanResults from './pages/ScanResults.jsx';
 import Positions from './pages/Positions.jsx';
@@ -25,6 +26,7 @@ const App = () => (
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/stock/:symbol" element={<StockDetail />} />
           <Route path="/signals" element={<Signals />} />
           <Route path="/scan" element={<ScanResults />} />
           <Route path="/positions" element={<Positions />} />

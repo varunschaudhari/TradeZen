@@ -161,6 +161,13 @@ def fetch_ticker_info(symbol: str) -> dict:
             "earnings_timestamp": info.get("earningsTimestamp"),
             "prev_close": info.get("previousClose"),
             "current_price": info.get("currentPrice") or info.get("regularMarketPrice"),
+            # Fundamentals — surfaced on the stock detail page
+            "trailing_pe": info.get("trailingPE"),
+            "forward_pe": info.get("forwardPE"),
+            "sector": info.get("sector"),
+            "industry": info.get("industry"),
+            "company_name": info.get("longName") or info.get("shortName"),
+            "dividend_yield": info.get("dividendYield"),
         }
     except Exception as exc:
         logger.error("fetch_ticker_info failed for %s: %s", ticker, exc)
