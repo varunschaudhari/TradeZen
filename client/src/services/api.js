@@ -55,6 +55,11 @@ export const marketApi = {
   get: () => api.get('/api/market'),
 };
 
+export const scanApi = {
+  getLatest: () => api.get('/api/scan/latest'),
+  getHistory: () => api.get('/api/scan/history'),
+};
+
 export const newsApi = {
   getBySymbol: (symbol) => api.get(`/api/news/${symbol}`),
 };

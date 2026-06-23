@@ -21,9 +21,11 @@ const scanStockSchema = new mongoose.Schema(
     reachedClaude: { type: Boolean, default: false },
     verdict: String, // BUY | WAIT | SKIP | null
     confidence: String,
+    // SCREEN (pre-filter cut) | ANALYZE_CAP (screened in, over analyze cap) |
     // GATES (failed gates) | RANKED_OUT (passed gates, below Claude cap) |
     // CLAUDE (analyzed by Claude → WAIT/SKIP) | SIGNAL (Claude BUY)
     droppedAtStage: String,
+    reason: String, // screen-filter reason for SCREEN stage (e.g. trend, momentum)
   },
   { _id: false }
 );

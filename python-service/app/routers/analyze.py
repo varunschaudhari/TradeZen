@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException
 from app.config import (
     ENTRY_EMA20_BAND_PCT,
     FALLBACK_SL_PCT,
+    NIFTY_TICKER,
     SL_ATR_MULTIPLIER,
     TARGET1_RR,
     TARGET2_RR,
@@ -31,8 +32,9 @@ from app.models.schemas import (
     StockAnalysis,
 )
 from app.services.data_fetcher import fetch_ohlcv, fetch_ticker_info, fetch_weekly_ohlcv
-from app.services.indicators import compute_indicators
-from app.services.market_data import fetch_market_overview
+from app.services.indicators import compute_indicator_series, compute_indicators
+from app.services.market_data import fetch_index_series, fetch_market_overview
+from app.services.universe import list_symbols
 from app.services.support_resistance import (
     compute_fibonacci,
     find_support_resistance,
@@ -347,3 +349,41 @@ async def get_market_data() -> MarketResponse:
     except Exception as exc:
         logger.error("GET /market failed: %s", exc)
         raise HTTPException(status_code=503, detail=f"Market data unavailable: {exc}") from exc
+
+
+@router.get("/universe")
+async def get_universe_symbols() -> dict:
+    """Return the full static NSE universe symbol list (for full-universe backtests)."""
+    symbols = list_symbols()
+    return {"symbols": symbols, "count": len(symbols)}
+
+
+@router.get("/indicator-series/{symbol}")
+async def get_indicator_series(symbol: str, period: str = "2y") -> dict:
+    """
+    Return per-bar OHLCV + indicator arrays for backtesting (daily interval).
+
+    Args:
+        symbol: NSE symbol without suffix (e.g. 'RELIANCE')
+        period: yfinance period string (default '2y' for backtest history)
+    """
+    df = fetch_ohlcv(symbol, period=period, interval="1d")
+    if df is None or df.empty:
+        raise HTTPException(status_code=404, detail=f"No daily OHLCV for {symbol}")
+    series = compute_indicator_series(df)
+    logger.info("Indicator series served for %s | %d bars | period=%s", symbol, len(series["date"]), period)
+    return {"symbol": symbol, "bars": len(series["date"]), "series": series}
+
+
+@router.get("/nifty-history")
+async def get_nifty_history(period: str = "1y") -> dict:
+    """
+    Return Nifty 50 daily closes (+ dates) for relative-strength scoring and backtest
+    alignment.
+
+    Args:
+        period: yfinance period string (default '1y'; backtest uses '2y')
+    """
+    data = fetch_index_series(NIFTY_TICKER, period)
+    logger.info("Nifty history served | %d closes | period=%s", len(data["closes"]), period)
+    return {"ticker": NIFTY_TICKER, "dates": data["dates"], "closes": data["closes"], "count": len(data["closes"])}

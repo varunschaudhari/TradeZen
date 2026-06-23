@@ -112,10 +112,22 @@ class ScreenCandidate(BaseModel):
     rocPct: Optional[float] = None
 
 
+class ScreenReject(BaseModel):
+    """A symbol that was screened out, with its price and the filter that cut it."""
+
+    symbol: str
+    tier: str
+    currentPrice: Optional[float] = None
+    stage: str  # no_data | liquidity | market_cap | trend | momentum | atr | earnings
+
+
 class ScreenResponse(BaseModel):
     """Response body for POST /screen."""
 
     candidates: list[ScreenCandidate]
+    rejected: list[ScreenReject] = Field(
+        default_factory=list, description="Per-symbol screened-out stocks with reason"
+    )
     universeCount: int
     screenedCount: int
     candidateCount: int

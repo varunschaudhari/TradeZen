@@ -115,6 +115,48 @@ def _build_market_index(df: pd.DataFrame) -> MarketIndex:
     )
 
 
+def fetch_index_series(ticker: str = NIFTY_TICKER, period: str = "1y") -> dict:
+    """
+    Download an index's daily closes with dates (oldest→newest). Dates let the backtest
+    align the index to each stock's bars for Gate 1 and relative strength.
+
+    Args:
+        ticker: yfinance index ticker (default Nifty 50 ^NSEI)
+        period: yfinance period string
+
+    Returns:
+        { dates: [YYYY-MM-DD], closes: [float] } — empty arrays on failure
+    """
+    try:
+        df = yf.download(
+            ticker,
+            period=period,
+            interval=INDEX_FETCH_INTERVAL,
+            progress=False,
+            auto_adjust=True,
+            threads=False,
+            timeout=YFINANCE_TIMEOUT,
+        )
+        if df is None or df.empty:
+            return {"dates": [], "closes": []}
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.columns = [str(c).lower() for c in df.columns]
+        clean = df["close"].dropna()
+        return {
+            "dates": [d.strftime("%Y-%m-%d") for d in clean.index],
+            "closes": [round(float(x), 2) for x in clean.tolist()],
+        }
+    except Exception as exc:
+        logger.error("fetch_index_series failed for %s: %s", ticker, exc)
+        return {"dates": [], "closes": []}
+
+
+def fetch_index_closes(ticker: str = NIFTY_TICKER, period: str = "1y") -> list[float]:
+    """Closes-only convenience wrapper over fetch_index_series (for the RS feed)."""
+    return fetch_index_series(ticker, period)["closes"]
+
+
 def _fetch_vix() -> Optional[float]:
     """
     Fetch the current India VIX value.

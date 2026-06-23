@@ -202,6 +202,79 @@ export const fetchMarketData = async () => {
 };
 
 /**
+ * GET /nifty-history — fetch Nifty 50 daily closes for the relative-strength signal.
+ * Returns [] on failure so the scan degrades gracefully (RS becomes neutral).
+ *
+ * @param {string} [period='1y'] - yfinance period string
+ * @returns {Promise<number[]>} Daily closes (oldest→newest)
+ */
+export const fetchNiftyHistory = async (period = '1y') => {
+  try {
+    const response = await withRetry(() =>
+      pythonClient.get('/nifty-history', { params: { period } })
+    );
+    return response.data?.closes ?? [];
+  } catch (err) {
+    logger.warn('Python /nifty-history failed — relative strength will be neutral', {
+      error: axiosErrMsg(err),
+    });
+    return [];
+  }
+};
+
+/**
+ * GET /nifty-history — Nifty closes WITH dates (for backtest date alignment).
+ *
+ * @param {string} [period='2y'] - yfinance period
+ * @returns {Promise<{ dates: string[], closes: number[] }>} empty arrays on failure
+ */
+export const fetchNiftySeries = async (period = '2y') => {
+  try {
+    const response = await withRetry(() =>
+      pythonClient.get('/nifty-history', { params: { period }, timeout: 60_000 })
+    );
+    return { dates: response.data?.dates ?? [], closes: response.data?.closes ?? [] };
+  } catch (err) {
+    logger.warn('Python /nifty-history (series) failed', { error: axiosErrMsg(err) });
+    return { dates: [], closes: [] };
+  }
+};
+
+/**
+ * GET /universe — the full static NSE universe symbol list (for full-universe backtests).
+ *
+ * @returns {Promise<string[]>} Symbols, or [] on failure
+ */
+export const fetchUniverse = async () => {
+  try {
+    const response = await withRetry(() => pythonClient.get('/universe', { timeout: 15_000 }));
+    return response.data?.symbols ?? [];
+  } catch (err) {
+    logger.error('Python /universe failed', { error: axiosErrMsg(err) });
+    return [];
+  }
+};
+
+/**
+ * GET /indicator-series/:symbol — per-bar OHLCV + indicators for backtesting.
+ *
+ * @param {string} symbol - NSE symbol (without .NS)
+ * @param {string} [period='2y'] - yfinance period
+ * @returns {Promise<{ symbol: string, bars: number, series: object }|null>} null on failure
+ */
+export const fetchIndicatorSeries = async (symbol, period = '2y') => {
+  try {
+    const response = await withRetry(() =>
+      pythonClient.get(`/indicator-series/${symbol}`, { params: { period }, timeout: 60_000 })
+    );
+    return response.data;
+  } catch (err) {
+    logger.error('Python /indicator-series failed', { symbol, error: axiosErrMsg(err) });
+    return null;
+  }
+};
+
+/**
  * GET /ohlcv/:symbol — fetch OHLCV candlestick data for the dashboard chart.
  *
  * @param {string} symbol               - NSE symbol (without .NS)

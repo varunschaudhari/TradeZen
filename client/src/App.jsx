@@ -12,6 +12,7 @@ import { AppProvider } from './context/AppContext.jsx';
 import Layout from './components/Layout.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Signals from './pages/Signals.jsx';
+import ScanResults from './pages/ScanResults.jsx';
 import Positions from './pages/Positions.jsx';
 import Performance from './pages/Performance.jsx';
 import Watchlist from './pages/Watchlist.jsx';
@@ -25,6 +26,7 @@ const App = () => (
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/signals" element={<Signals />} />
+          <Route path="/scan" element={<ScanResults />} />
           <Route path="/positions" element={<Positions />} />
           <Route path="/performance" element={<Performance />} />
           <Route path="/watchlist" element={<Watchlist />} />

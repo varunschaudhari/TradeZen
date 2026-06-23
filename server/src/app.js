@@ -33,6 +33,7 @@ import healthRouter from './routes/health.js';
 import scannerRouter from './routes/scanner.js';
 import scanRouter from './routes/scan.js';
 import testRouter from './routes/test.js';
+import marketSignalsRouter from './routes/marketSignals.js';
 
 dotenv.config();
 
@@ -63,6 +64,7 @@ app.use('/api/health', healthRouter);
 app.use('/api/scanner', scannerRouter);
 app.use('/api/scan', scanRouter);
 app.use('/api/test', testRouter);
+app.use('/api/market-signals', marketSignalsRouter);
 
 app.use(errorHandler);
 

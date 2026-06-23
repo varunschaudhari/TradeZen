@@ -215,6 +215,57 @@ def _detect_candle_pattern(df: pd.DataFrame) -> str:
         return "NONE"
 
 
+def _series_to_list(series: pd.Series, decimals: int = 4) -> list:
+    """Convert a Series to a JSON-safe list, NaN → None, rounded.
+
+    Args:
+        series: Indicator Series
+        decimals: Rounding precision
+
+    Returns:
+        List with None for NaN entries
+    """
+    return [None if pd.isna(x) else round(float(x), decimals) for x in series]
+
+
+def compute_indicator_series(df: pd.DataFrame) -> dict:
+    """
+    Compute per-bar indicator arrays for backtesting (reuses the live indicator math,
+    so a backtest sees exactly what the scanner would have seen on each historical day).
+
+    Args:
+        df: Daily OHLCV DataFrame (lowercase columns, DatetimeIndex)
+
+    Returns:
+        Dict of equal-length arrays: date, close, high, low, volume + indicators
+    """
+    close = df["close"].astype(float)
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    volume = df["volume"].astype(float)
+    macd_line, signal_line, _ = _macd(close, MACD_FAST, MACD_SLOW, MACD_SIGNAL_PERIOD)
+    _, _, bb_pct_b = _bollinger_bands(close, BB_PERIOD, BB_STD)
+    vol_ratio = volume / volume.rolling(VOLUME_AVG_PERIOD).mean()
+
+    return {
+        "date": [d.strftime("%Y-%m-%d") for d in df.index],
+        "open": _series_to_list(df["open"].astype(float), 2),
+        "close": _series_to_list(close, 2),
+        "high": _series_to_list(high, 2),
+        "low": _series_to_list(low, 2),
+        "volume": [int(x) if pd.notna(x) else 0 for x in volume],
+        "ema20": _series_to_list(_ema(close, EMA_SHORT), 2),
+        "ema50": _series_to_list(_ema(close, EMA_MID), 2),
+        "ema200": _series_to_list(_ema(close, EMA_LONG), 2),
+        "rsi14": _series_to_list(_rsi(close, RSI_PERIOD)),
+        "atr14": _series_to_list(_atr(high, low, close, ATR_PERIOD)),
+        "bbPctB": _series_to_list(bb_pct_b),
+        "volRatio": _series_to_list(vol_ratio, 2),
+        "macd": _series_to_list(macd_line),
+        "macdSignal": _series_to_list(signal_line),
+    }
+
+
 def compute_indicators(df: pd.DataFrame) -> Optional[IndicatorData]:
     """
     Compute all 8 technical indicators for a stock's daily OHLCV DataFrame.

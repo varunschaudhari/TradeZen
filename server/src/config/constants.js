@@ -229,6 +229,13 @@ export const SCAN_CLAUDE_CONCURRENCY = Math.max(
 );
 export const SCAN_RESULT_TTL_SECONDS = 14 * 24 * 60 * 60; // keep scan snapshots 14 days
 
+// Backtesting (Flow — backtestEngine.js)
+export const BACKTEST_PERIOD = '2y'; // history window pulled per symbol
+export const BACKTEST_WARMUP_BARS = 200; // skip until EMA200 + RS lookbacks are valid
+export const BACKTEST_HOLD_DAYS = 10; // max bars held before a time-based exit
+export const BACKTEST_SL_ATR_MULT = 1.5; // fallback stop = entry − ATR×mult
+export const BACKTEST_ENTRY_EMA20_BAND = 0.05; // use EMA20 as entry if within 5% of price
+
 // Trade tracking (Flow 9 — tradeTracker.js)
 export const EARNINGS_EXIT_REMINDER_DAYS = 5; // remind to exit N days before earnings
 export const SL_WARNING_THROTTLE_MS = 60 * 60 * 1000; // at most one SL warning per hour
@@ -261,6 +268,11 @@ export const SENTIMENTS = Object.freeze({
   POSITIVE: 'POSITIVE',
   NEUTRAL: 'NEUTRAL',
   NEGATIVE: 'NEGATIVE',
+});
+export const FII_TRENDS = Object.freeze({
+  BUYING: 'BUYING',
+  SELLING: 'SELLING',
+  NEUTRAL: 'NEUTRAL',
 });
 export const WEEKLY_TRENDS = Object.freeze({
   BULLISH: 'BULLISH',

@@ -43,6 +43,11 @@ const NAV = [
     d: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zm8.25-4.5c0-.621.504-1.125 1.125-1.125h2.25C15.496 7.5 16 8.004 16 8.625v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zm8.25-6c0-.621.504-1.125 1.125-1.125h2.25C21.496 1.5 22 2.004 22 2.625v17.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V2.625z',
   },
   {
+    path: '/scan',
+    label: 'Scan Results',
+    d: 'M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z',
+  },
+  {
     path: '/positions',
     label: 'Positions',
     d: 'M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941',
@@ -68,7 +73,10 @@ const NAV = [
 const SidebarContent = ({ onNavClick }) => {
   const { isConnected, marketMode } = useApp();
 
-  const modeColor = { BULL: 'text-bull', CAUTION: 'text-wait', BEAR: 'text-bear' }[marketMode] ?? 'text-slate-400';
+  const modeColor =
+    { BULL: 'text-bull', CAUTION: 'text-wait', MIXED: 'text-orange-400', BEAR: 'text-bear' }[
+      marketMode
+    ] ?? 'text-slate-400';
 
   return (
     <>

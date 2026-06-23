@@ -8,7 +8,7 @@
 
 export const VERDICTS = Object.freeze({ BUY: 'BUY', WAIT: 'WAIT', SKIP: 'SKIP' });
 export const CONFIDENCE = Object.freeze({ HIGH: 'HIGH', MEDIUM: 'MEDIUM', LOW: 'LOW' });
-export const MARKET_MODES = Object.freeze({ BULL: 'BULL', CAUTION: 'CAUTION', BEAR: 'BEAR' });
+export const MARKET_MODES = Object.freeze({ BULL: 'BULL', CAUTION: 'CAUTION', MIXED: 'MIXED', BEAR: 'BEAR' });
 export const SENTIMENTS = Object.freeze({ POSITIVE: 'POSITIVE', NEUTRAL: 'NEUTRAL', NEGATIVE: 'NEGATIVE' });
 
 export const GATE_NAMES = Object.freeze({
@@ -37,7 +37,18 @@ export const VERDICT_BG = Object.freeze({
 export const MARKET_MODE_COLORS = Object.freeze({
   BULL: 'text-bull',
   CAUTION: 'text-wait',
+  MIXED: 'text-orange-400',
   BEAR: 'text-bear',
+});
+
+// Stage a stock dropped out of the scan funnel (ScanResult.stocks[].droppedAtStage)
+export const SCAN_STAGE_STYLES = Object.freeze({
+  SIGNAL: 'bg-buy/15 text-buy border-buy/30',
+  CLAUDE: 'bg-wait/15 text-wait border-wait/30',
+  RANKED_OUT: 'bg-slate-700/40 text-slate-300 border-slate-600',
+  GATES: 'bg-skip/15 text-skip border-skip/30',
+  ANALYZE_CAP: 'bg-slate-700/40 text-slate-400 border-slate-600',
+  SCREEN: 'bg-slate-800 text-slate-500 border-slate-700',
 });
 
 export const SOCKET_EVENTS = Object.freeze({

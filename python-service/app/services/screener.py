@@ -35,7 +35,7 @@ from app.config import (
     SCREEN_RSI_MIN,
     YFINANCE_TIMEOUT,
 )
-from app.models.schemas import ScreenCandidate, ScreenResponse
+from app.models.schemas import ScreenCandidate, ScreenReject, ScreenResponse
 from app.services.data_fetcher import fetch_ticker_info
 from app.services.indicators import _atr, _ema, _rsi
 from app.services.universe import get_universe
@@ -162,39 +162,31 @@ def _compute_metrics(df: pd.DataFrame) -> Optional[dict]:
         return None
 
 
-def _passes_price_filters(metrics: dict, tier: str, tiers: tuple[str, ...], rej: dict) -> bool:
+def _failing_filter(metrics: dict, tier: str, tiers: tuple[str, ...]) -> Optional[str]:
     """
-    Apply pre-filters 1–5 (liquidity, market-cap tier, trend, momentum, ATR).
-
-    Increments the matching key in `rej` on the first filter that fails and
-    returns False; returns True only if all five pass.
+    Apply pre-filters 1–5 (liquidity, market-cap tier, trend, momentum, ATR) and return
+    the name of the first filter that fails, or None if the symbol passes all five.
 
     Args:
         metrics: Output of _compute_metrics
         tier: Market-cap tier tag for the symbol (or WATCHLIST_TIER)
         tiers: Allowed tiers from the request
-        rej: Mutable rejection-count accumulator
 
     Returns:
-        True if the symbol survives all price-based filters
+        'liquidity' | 'market_cap' | 'trend' | 'momentum' | 'atr', or None
     """
     if metrics["avgTurnover"] < MIN_AVG_TURNOVER_INR:
-        rej["liquidity"] += 1
-        return False
+        return "liquidity"
     if tier != WATCHLIST_TIER and tier not in tiers:
-        rej["market_cap"] += 1
-        return False
+        return "market_cap"
     if not (metrics["currentPrice"] > metrics["ema50"] > metrics["ema200"]):
-        rej["trend"] += 1
-        return False
+        return "trend"
     rsi_ok = SCREEN_RSI_MIN <= metrics["rsi14"] <= SCREEN_RSI_MAX
     if not (rsi_ok and metrics["rocPct"] >= MIN_ROC_PCT):
-        rej["momentum"] += 1
-        return False
+        return "momentum"
     if not (ATR_PCT_MIN <= metrics["atrPct"] <= ATR_PCT_MAX):
-        rej["atr"] += 1
-        return False
-    return True
+        return "atr"
+    return None
 
 
 def _has_imminent_earnings(symbol: str) -> bool:
@@ -244,19 +236,24 @@ def screen_universe(
     frames = _download_universe_ohlcv(symbols)
 
     survivors: list[ScreenCandidate] = []
+    rejected: list[ScreenReject] = []
+
+    def _reject(symbol: str, tier: str, price: Optional[float], stage: str) -> None:
+        rej[stage] += 1
+        rejected.append(ScreenReject(symbol=symbol, tier=tier, currentPrice=price, stage=stage))
+
     for symbol, tier in universe.items():
         df = frames.get(symbol)
-        if df is None:
-            rej["no_data"] += 1
-            continue
-        metrics = _compute_metrics(df)
+        metrics = _compute_metrics(df) if df is not None else None
         if metrics is None:
-            rej["no_data"] += 1
+            _reject(symbol, tier, None, "no_data")
             continue
-        if not _passes_price_filters(metrics, tier, allowed, rej):
+        reason = _failing_filter(metrics, tier, allowed)
+        if reason:
+            _reject(symbol, tier, metrics["currentPrice"], reason)
             continue
         if check_earnings and _has_imminent_earnings(symbol):
-            rej["earnings"] += 1
+            _reject(symbol, tier, metrics["currentPrice"], "earnings")
             continue
         survivors.append(
             ScreenCandidate(
@@ -277,6 +274,7 @@ def screen_universe(
     )
     return ScreenResponse(
         candidates=survivors,
+        rejected=rejected,
         universeCount=len(symbols),
         screenedCount=len(frames),
         candidateCount=len(survivors),

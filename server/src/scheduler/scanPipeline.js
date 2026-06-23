@@ -26,6 +26,7 @@ import {
 } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 import { getMarketHealth } from '../services/marketHealthService.js';
+import { getMarketSignals } from '../services/marketSignals.js';
 import { runStockDiscovery } from '../services/stockDiscovery.js';
 import { buildClaudePrompt, callClaudeAPI } from '../services/claudeEngine.js';
 import { checkGate7 } from '../services/gateChecker.js';
@@ -244,6 +245,7 @@ async function persistScanResult({
   health,
   funnel,
   evaluated,
+  screenedOut,
   candidates,
   decisions,
   metrics,
@@ -253,7 +255,7 @@ async function persistScanResult({
     const selected = new Set(candidates.map((c) => c.symbol));
     const verdictBy = new Map((decisions ?? []).filter(Boolean).map((d) => [d.symbol, d]));
 
-    const stocks = (evaluated ?? []).map((e) => {
+    const analyzedStocks = (evaluated ?? []).map((e) => {
       const passedGates = e.gatesPassed >= GATES_REQUIRED_FOR_CLAUDE && !e.hardBlockFired;
       const reachedClaude = selected.has(e.symbol);
       const d = verdictBy.get(e.symbol);
@@ -270,8 +272,24 @@ async function persistScanResult({
         verdict: d?.verdict ?? (reachedClaude ? null : 'SKIP'),
         confidence: d?.confidence ?? null,
         droppedAtStage,
+        reason: null,
       };
     });
+
+    // Screened-out + analyze-capped stocks (never analyzed) — full per-symbol coverage
+    const notAnalyzed = (screenedOut ?? []).map((s) => ({
+      symbol: s.symbol,
+      currentPrice: s.currentPrice,
+      gatesPassed: null,
+      compositeScore: null,
+      hardBlockFired: false,
+      reachedClaude: false,
+      verdict: null,
+      confidence: null,
+      droppedAtStage: s.droppedAtStage,
+      reason: s.reason,
+    }));
+    const stocks = [...analyzedStocks, ...notAnalyzed];
 
     await ScanResult.create({
       marketMode: health.marketMode,
@@ -359,9 +377,17 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
     }
 
     const marketData = toMarketData(health);
+    // Inject market-regime signals (FII flow, P/C ratio, sector ranking) so the
+    // composite score (FII +8, P/C +5) and Claude prompt reflect the current regime.
+    const signals = await getMarketSignals();
+    marketData.fiiTrend = signals.fiiTrend;
+    marketData.pcRatio = signals.pcRatio;
+    marketData.topSectors = signals.topSectors;
+    marketData.bottomSectors = signals.bottomSectors;
+
     const guards = await resolveGuards(config);
     const watchlistSymbols = (config.watchlist ?? []).map((w) => w.symbol);
-    const { candidates, funnel, evaluated } = await runStockDiscovery({
+    const { candidates, funnel, evaluated, screenedOut } = await runStockDiscovery({
       marketData,
       watchlistSymbols,
       capital: config.capital,
@@ -402,6 +428,7 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
       health,
       funnel,
       evaluated,
+      screenedOut,
       candidates,
       decisions,
       metrics,

@@ -334,7 +334,10 @@ export const calculateSimonsSignals = (input = {}) => {
     indicators.rsi14,
     indicators.ema20
   );
-  const gaps = findUnfilledGaps(highs, lows, currentPrice);
+  // Gaps don't feed the composite score; skipGaps avoids the per-bar O(n) scan in backtests.
+  const gaps = input.skipGaps
+    ? { upGaps: [], downGaps: [], nearestGap: null }
+    : findUnfilledGaps(highs, lows, currentPrice);
   const pead = detectPEAD(ext.earningsHistory);
   const sector = detectSectorMomentum(ext.sectorRanking, ext.stockSector);
   const fii = evaluateFIIFlow(ext.fiiData);

@@ -26,11 +26,17 @@ import {
   SCREEN_TIERS,
 } from '../config/constants.js';
 import { logger } from '../config/logger.js';
-import { analyzeStocks, fetchMarketData, screenUniverse } from './pythonBridge.js';
+import {
+  analyzeStocks,
+  fetchMarketData,
+  fetchNiftyHistory,
+  screenUniverse,
+} from './pythonBridge.js';
 import { fetchNewsAndSentiment } from './newsFetcher.js';
 import { calculateSimonsSignals, fetchSymbolHistory } from './simonsSignals.js';
 import { runAllGates } from './gateChecker.js';
 import { determineMarketMode } from './marketHealthService.js';
+import { getMarketSignals } from './marketSignals.js';
 
 /**
  * Run async `fn` over `items` with a bounded number of concurrent workers.
@@ -141,9 +147,27 @@ export const runStockDiscovery = async (opts = {}) => {
   funnel.screened = screen.candidateCount;
   funnel.screenRejections = screen.rejectionCounts;
   const symbols = (screen.candidates ?? []).slice(0, maxAnalyze).map((c) => c.symbol);
+
+  // Per-symbol record of everything that didn't reach analysis: pre-filter rejects +
+  // screened-in survivors that fell beyond the analyze cap.
+  const screenedOut = [
+    ...(screen.rejected ?? []).map((r) => ({
+      symbol: r.symbol,
+      currentPrice: r.currentPrice,
+      droppedAtStage: 'SCREEN',
+      reason: r.stage,
+    })),
+    ...(screen.candidates ?? []).slice(maxAnalyze).map((c) => ({
+      symbol: c.symbol,
+      currentPrice: c.currentPrice,
+      droppedAtStage: 'ANALYZE_CAP',
+      reason: null,
+    })),
+  ];
+
   if (!symbols.length) {
     logger.info('Discovery: no candidates after screen', { funnel });
-    return { candidates: [], funnel };
+    return { candidates: [], funnel, screenedOut };
   }
 
   // Full analysis for survivors
@@ -151,9 +175,12 @@ export const runStockDiscovery = async (opts = {}) => {
   const valid = (analysis.results ?? []).filter((r) => !r.error);
   funnel.analyzed = valid.length;
 
+  // Nifty closes power the relative-strength signal — fetch once, share across candidates
+  const closes = niftyCloses ?? (await fetchNiftyHistory());
+
   // Enrich (news + Simons) and run Stage 7 gates with bounded concurrency
   const gated = await mapWithConcurrency(valid, DISCOVERY_CONCURRENCY, (stock) =>
-    enrichAndGate(stock, marketData, niftyCloses)
+    enrichAndGate(stock, marketData, closes)
   );
   funnel.gatePassed = gated.filter(
     (c) => c.gateResult.gatesPassed >= GATES_REQUIRED_FOR_CLAUDE && !c.gateResult.hardBlockFired
@@ -174,7 +201,7 @@ export const runStockDiscovery = async (opts = {}) => {
   }));
 
   logger.info('Stock discovery complete', { funnel, marketMode: marketData?.marketMode });
-  return { candidates, funnel, marketData, evaluated };
+  return { candidates, funnel, marketData, evaluated, screenedOut };
 };
 
 /**
@@ -196,14 +223,22 @@ export const evaluateSymbols = async (symbols, opts = {}) => {
     vix: rawMarket?.vix,
     adRatio: rawMarket?.adRatio,
   });
+  const signals = await getMarketSignals();
   const marketData = {
     ...rawMarket,
     marketMode: classified.mode,
     narrowMarket: classified.mode === MARKET_MODES.MIXED,
+    fiiTrend: signals.fiiTrend,
+    pcRatio: signals.pcRatio,
+    topSectors: signals.topSectors,
+    bottomSectors: signals.bottomSectors,
   };
   const capital = opts.capital ?? 1_000_000;
   const riskPct = opts.riskPct ?? 1;
-  const analysis = await analyzeStocks(symbols, capital, riskPct);
+  const [analysis, niftyCloses] = await Promise.all([
+    analyzeStocks(symbols, capital, riskPct),
+    opts.niftyCloses ? Promise.resolve(opts.niftyCloses) : fetchNiftyHistory(),
+  ]);
 
   const candidates = [];
   for (const stock of analysis.results ?? []) {
@@ -212,7 +247,7 @@ export const evaluateSymbols = async (symbols, opts = {}) => {
       continue;
     }
     try {
-      candidates.push(await enrichAndGate(stock, marketData, opts.niftyCloses ?? null));
+      candidates.push(await enrichAndGate(stock, marketData, niftyCloses));
     } catch (err) {
       candidates.push({ symbol: stock.symbol, error: err.message });
     }
