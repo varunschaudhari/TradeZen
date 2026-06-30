@@ -10,7 +10,9 @@ import LogTradeModal from '../components/LogTradeModal.jsx';
 import useSocket from '../hooks/useSocket.js';
 import { tradesApi } from '../services/api.js';
 import { SOCKET_EVENTS, EXIT_REASONS } from '../utils/constants.js';
-import { formatCurrency, formatPercent } from '../utils/formatters.js';
+import { formatCurrency, formatPercent, timeAgo } from '../utils/formatters.js';
+
+const POLL_MS = 45_000; // auto-refresh live P&L every 45s
 
 /* ── Close Trade Modal ───────────────────────────────────────────────────────── */
 const CloseTradeModal = ({ trade, onConfirm, onCancel }) => {
@@ -78,6 +80,8 @@ const CloseTradeModal = ({ trade, onConfirm, onCancel }) => {
 /* ── Positions Page ──────────────────────────────────────────────────────────── */
 const Positions = () => {
   const [trades,       setTrades]       = useState([]);
+  const [summary,      setSummary]      = useState(null);
+  const [updatedAt,    setUpdatedAt]    = useState(null);
   const [loading,      setLoading]      = useState(true);
   const [error,        setError]        = useState(null);
   const [slWarnings,   setSlWarnings]   = useState(new Set());
@@ -87,8 +91,10 @@ const Positions = () => {
 
   const loadTrades = useCallback(async () => {
     try {
-      const res = await tradesApi.getOpen();
-      setTrades(res.data ?? []);
+      const res = await tradesApi.getLive();
+      setTrades(res.data?.positions ?? []);
+      setSummary(res.data?.summary ?? null);
+      setUpdatedAt(res.data?.summary?.updatedAt ?? new Date().toISOString());
       setError(null);
     } catch (err) {
       setError(err.message);
@@ -98,6 +104,12 @@ const Positions = () => {
   }, []);
 
   useEffect(() => { loadTrades(); }, [loadTrades]);
+
+  /* Live auto-refresh on a timer (fresh quotes → live P&L + suggestions) */
+  useEffect(() => {
+    const id = setInterval(loadTrades, POLL_MS);
+    return () => clearInterval(id);
+  }, [loadTrades]);
 
   /* Auto-refresh after scan completes */
   useEffect(() => subscribe(SOCKET_EVENTS.SCAN_COMPLETE, () => loadTrades()), [subscribe, loadTrades]);
@@ -137,6 +149,17 @@ const Positions = () => {
     setClosingTrade({ ...trade, _defaultReason: EXIT_REASONS.STOPLOSS });
   }, [trades]);
 
+  const handleTrailStop = useCallback(async (id, suggestedStop) => {
+    try {
+      const res = await tradesApi.update(id, { stopLoss: suggestedStop, slTrailed: true });
+      setTrades((prev) => prev.map((t) => (t._id === id ? { ...t, ...res.data } : t)));
+      toast.success(`Stop trailed to ${formatCurrency(suggestedStop)}`);
+      loadTrades(); // re-evaluate suggestions against the new stop
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }, [loadTrades]);
+
   const handleCloseOpen = useCallback((id) => {
     setClosingTrade(trades.find((t) => t._id === id) ?? null);
   }, [trades]);
@@ -157,9 +180,11 @@ const Positions = () => {
     setTrades((prev) => [newTrade, ...prev]);
   }, []);
 
-  /* ── Summary stats ────────────────────────────────────────────────────── */
-  const totalDeployed    = trades.reduce((s, t) => s + (t.capitalDeployed  ?? 0), 0);
-  const totalUnrealized  = trades.reduce((s, t) => s + (t.unrealizedPnl   ?? 0), 0);
+  /* ── Summary stats (prefer server live summary, fall back to local) ─────── */
+  const totalDeployed    = summary?.totalDeployed   ?? trades.reduce((s, t) => s + (t.capitalDeployed ?? 0), 0);
+  const totalUnrealized  = summary?.totalUnrealized ?? trades.reduce((s, t) => s + (t.unrealizedPnl  ?? 0), 0);
+  const actionable       = summary?.actionable ?? trades.filter((t) => t.live && t.live.action !== 'HOLD').length;
+  const atRisk           = summary?.atRisk ?? 0;
   const pnlColor         = totalUnrealized >= 0 ? 'text-bull' : 'text-bear';
 
   /* ── Render ───────────────────────────────────────────────────────────── */
@@ -175,12 +200,22 @@ const Positions = () => {
     <div className="min-h-screen bg-surface p-4 space-y-4">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-bold text-slate-100">
-          Open Positions
-          <span className="ml-2 text-sm font-normal text-slate-500">
-            ({trades.length} / 3 slots)
-          </span>
-        </h1>
+        <div>
+          <h1 className="text-xl font-bold text-slate-100">
+            Open Positions
+            <span className="ml-2 text-sm font-normal text-slate-500">
+              ({trades.length} / 15 slots)
+            </span>
+          </h1>
+          <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-bull animate-pulse" />
+            Live · auto-refreshes every {POLL_MS / 1000}s
+            {updatedAt ? ` · updated ${timeAgo(updatedAt)}` : ''}
+            {summary && summary.quotesLive < summary.count
+              ? ` · ${summary.count - summary.quotesLive} stale quote(s)`
+              : ''}
+          </p>
+        </div>
         <div className="flex gap-2">
           <button onClick={loadTrades} className="btn-primary text-xs px-3 py-1">
             Refresh
@@ -200,11 +235,7 @@ const Positions = () => {
 
       {/* Summary strip */}
       {trades.length > 0 && (
-        <div className="grid grid-cols-3 gap-3">
-          <div className="card text-center py-2">
-            <p className="text-xs text-slate-500 mb-1">Positions</p>
-            <p className="text-2xl font-mono font-bold text-slate-100">{trades.length}</p>
-          </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="card text-center py-2">
             <p className="text-xs text-slate-500 mb-1">Capital Deployed</p>
             <p className="text-lg font-mono font-bold text-slate-100">
@@ -216,6 +247,18 @@ const Positions = () => {
             <p className={`text-lg font-mono font-bold ${pnlColor}`}>
               {formatPercent(totalDeployed > 0 ? (totalUnrealized / totalDeployed) * 100 : 0)}
               <span className="text-xs ml-1">({formatCurrency(totalUnrealized)})</span>
+            </p>
+          </div>
+          <div className="card text-center py-2">
+            <p className="text-xs text-slate-500 mb-1">Action Needed</p>
+            <p className={`text-2xl font-mono font-bold ${actionable > 0 ? 'text-wait' : 'text-slate-100'}`}>
+              {actionable}
+            </p>
+          </div>
+          <div className="card text-center py-2">
+            <p className="text-xs text-slate-500 mb-1">At Risk</p>
+            <p className={`text-2xl font-mono font-bold ${atRisk > 0 ? 'text-bear' : 'text-slate-100'}`}>
+              {atRisk}
             </p>
           </div>
         </div>
@@ -253,6 +296,7 @@ const Positions = () => {
                 onMarkT1Hit={handleT1Hit}
                 onMarkClosed={handleCloseOpen}
                 onMarkSLHit={handleSLHit}
+                onTrailStop={handleTrailStop}
               />
             </div>
           ))}

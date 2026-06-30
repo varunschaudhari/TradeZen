@@ -16,6 +16,7 @@ import Joi from 'joi';
 import Trade from '../models/Trade.js';
 import { validateBody } from '../middleware/validateRequest.js';
 import { sendTarget1Hit, sendTarget2Hit } from '../services/notifier.js';
+import { getLivePositions, refreshOpenPositions } from '../services/positionTracker.js';
 import { emitEvent, SOCKET_EVENTS } from '../socket/socketHandlers.js';
 import { TRADE_STATUSES, EXIT_REASONS } from '../config/constants.js';
 import { logger } from '../config/logger.js';
@@ -82,6 +83,28 @@ router.get('/open', async (_req, res, next) => {
   try {
     const trades = await Trade.find({ status: TRADE_STATUSES.OPEN }).sort({ createdAt: -1 }).lean();
     res.json({ success: true, data: trades, message: `${trades.length} open positions` });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/trades/live — open positions with FRESH-quote P&L, SL distance, and a
+// suggested action + trailing stop per position. Read-only (never closes trades).
+router.get('/live', async (_req, res, next) => {
+  try {
+    const { positions, summary } = await getLivePositions();
+    res.json({ success: true, data: { positions, summary }, message: `${positions.length} live positions` });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/trades/refresh — force the mutating monitor (auto-close on SL/T2, trail on
+// T1, fire alerts) using fresh light quotes. Returns the monitor summary.
+router.post('/refresh', async (_req, res, next) => {
+  try {
+    const summary = await refreshOpenPositions();
+    res.json({ success: true, data: summary, message: `Monitored ${summary.checked} position(s)` });
   } catch (err) {
     next(err);
   }

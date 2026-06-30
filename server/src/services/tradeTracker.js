@@ -16,6 +16,9 @@ import {
   DEFAULT_RISK_PCT,
   EARNINGS_EXIT_REMINDER_DAYS,
   EXIT_REASONS,
+  MAX_CAPITAL_DEPLOYED_PCT,
+  MAX_OPEN_TRADES,
+  MAX_PAPER_HOLD_DAYS,
   SL_WARNING_PCT,
   SL_WARNING_THROTTLE_MS,
   TRADE_STATUSES,
@@ -44,6 +47,7 @@ export const buildTradeDoc = (data, signalId = null) => {
   return {
     symbol: String(data.symbol).toUpperCase(),
     signalId: signalId ?? data.signalId ?? null,
+    source: data.source ?? 'MANUAL',
     status: TRADE_STATUSES.OPEN,
     entryPrice,
     entryDate: data.entryDate ?? new Date(),
@@ -174,6 +178,68 @@ export const logTrade = async (data) => {
 };
 
 /**
+ * Auto-open a PAPER trade from a BUY signal (opt-in, paper-mode only — never a real order).
+ * Gated and de-duplicated so it can't over-trade: paper mode + autoPaperTrade flag on, a
+ * positive size, no existing open trade for the symbol, and the live max-positions /
+ * max-capital guards re-checked at open time. Entry is the signal's entry price. Once open,
+ * the standard position monitor manages it to exit (SL/T1/T2 + the max-hold time exit).
+ *
+ * @param {object} signal - Saved BUY Signal (entryZone, stopLoss, target1, target2, shares, ...)
+ * @param {object} config - Config doc (paperTradeMode, autoPaperTrade, capital)
+ * @returns {Promise<object|null>} The created paper Trade, or null if skipped
+ */
+export const autoOpenPaperTrade = async (signal, config) => {
+  if (!config?.paperTradeMode || !config?.autoPaperTrade) return null;
+  if (signal?.verdict !== VERDICTS.BUY) return null;
+
+  const symbol = signal.symbol;
+  const shares = signal.shares ?? 0;
+  const entryPrice = signal.entryZone?.high ?? signal.entryZone?.low;
+  if (!(shares > 0) || !(entryPrice > 0) || !(signal.stopLoss > 0) || !(signal.target1 > 0)) {
+    return null;
+  }
+
+  // No second paper trade for a symbol already held.
+  if (await Trade.exists({ symbol, status: TRADE_STATUSES.OPEN })) return null;
+
+  // Re-check capital guards at open time (the signal passed them when created, but other
+  // trades may have opened since).
+  const open = await Trade.find({ status: TRADE_STATUSES.OPEN }).select('capitalDeployed').lean();
+  if (open.length >= MAX_OPEN_TRADES) {
+    logger.info(`Auto paper trade skipped (${MAX_OPEN_TRADES} open): ${symbol}`);
+    return null;
+  }
+  const capital = config.capital ?? 1_000_000;
+  const deployed = open.reduce((s, t) => s + (t.capitalDeployed ?? 0), 0);
+  const newDeploy = signal.capitalDeployed ?? shares * entryPrice;
+  if (deployed + newDeploy > capital * (MAX_CAPITAL_DEPLOYED_PCT / 100)) {
+    logger.info(`Auto paper trade skipped (capital cap): ${symbol}`);
+    return null;
+  }
+
+  const trade = await logTrade({
+    symbol,
+    entryPrice,
+    shares,
+    stopLoss: signal.stopLoss,
+    target1: signal.target1,
+    target2: signal.target2,
+    signalId: signal._id,
+    earningsTimestamp: signal.earningsTimestamp ?? null,
+    source: 'AUTO',
+    notes: `Auto paper trade from BUY (score ${signal.compositeScore ?? signal.simonsScore ?? '?'}, ${signal.confidence ?? '?'} confidence).`,
+  });
+  logger.info(`Auto paper trade opened: ${symbol}`, { shares, entryPrice });
+  return trade;
+};
+
+/** True when an AUTO paper trade has been held past the max-hold window. */
+function isPastMaxHold(trade) {
+  const entryMs = new Date(trade.entryDate ?? trade.createdAt).getTime();
+  return Number.isFinite(entryMs) && (Date.now() - entryMs) / MS_PER_DAY >= MAX_PAPER_HOLD_DAYS;
+}
+
+/**
  * Mark Target 1 hit on a trade: book half, trail SL to entry, alert + emit.
  *
  * @param {object} trade - Mongoose Trade doc
@@ -254,6 +320,14 @@ async function processTrade(trade, price, summary) {
   if (decision.t2Hit) {
     await closeTrade(trade, { exitPrice: price, exitReason: EXIT_REASONS.TARGET2 });
     summary.t2 += 1;
+    return;
+  }
+  // Max-hold time exit for AUTO paper trades: neither target nor stop hit in the window —
+  // close at the current price so the paper record resolves (feeds calibration).
+  if (trade.source === 'AUTO' && isPastMaxHold(trade)) {
+    trade.notes = `${trade.notes ?? ''} | closed: max-hold (${MAX_PAPER_HOLD_DAYS}d) time exit`.trim();
+    await closeTrade(trade, { exitPrice: price, exitReason: EXIT_REASONS.MANUAL });
+    summary.timeExit = (summary.timeExit ?? 0) + 1;
     return;
   }
   if (decision.t1Hit) {

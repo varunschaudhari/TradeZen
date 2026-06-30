@@ -52,6 +52,11 @@ const NAV_SECTIONS = [
         d: 'M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z',
       },
       {
+        path: '/stocks',
+        label: 'Stocks',
+        d: 'M3.75 5.25h16.5m-16.5 4.5h16.5m-16.5 4.5h16.5m-16.5 4.5h16.5',
+      },
+      {
         path: '/positions',
         label: 'Positions',
         d: 'M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941',
@@ -61,6 +66,11 @@ const NAV_SECTIONS = [
   {
     heading: 'Analytics',
     items: [
+      {
+        path: '/monitor',
+        label: 'Monitor',
+        d: 'M3 12h3.75l1.5-6 3 12 2.25-9 1.5 3H21',
+      },
       {
         path: '/performance',
         label: 'Performance',
@@ -109,7 +119,15 @@ const SidebarContent = ({ onNavClick }) => {
         </div>
         <div className="leading-tight">
           <p className="font-semibold text-slate-100 text-sm tracking-tight">SwingTrader<span className="text-accent"> AI</span></p>
-          <p className="text-slate-500 text-[10px] uppercase tracking-wider">NSE Swing Trading</p>
+          <p className="text-slate-500 text-[10px] uppercase tracking-wider flex items-center gap-1.5">
+            NSE Swing Trading
+            <span
+              className="px-1 py-px rounded bg-wait/15 text-wait text-[9px] font-bold tracking-wide normal-case"
+              title="Paper mode — hypothetical positions only. The system never places real orders."
+            >
+              PAPER
+            </span>
+          </p>
         </div>
       </div>
 
@@ -234,6 +252,12 @@ const Layout = ({ children }) => {
         </button>
         <span className="font-semibold text-slate-100 text-sm tracking-tight">
           SwingTrader<span className="text-accent"> AI</span>
+        </span>
+        <span
+          className="ml-auto px-1.5 py-0.5 rounded bg-wait/15 text-wait text-[10px] font-bold"
+          title="Paper mode — hypothetical positions only. The system never places real orders."
+        >
+          PAPER
         </span>
       </header>
 

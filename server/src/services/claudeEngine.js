@@ -20,6 +20,10 @@ import {
   CLAUDE_TEMPERATURE,
   CONFIDENCE_LEVELS,
   DEFAULT_RISK_PCT,
+  RSI_MAX,
+  RSI_MIN,
+  SCORE_HIGH_CONFIDENCE,
+  SCORE_MEDIUM_CONFIDENCE,
   SETUP_TYPES,
   VERDICTS,
 } from '../config/constants.js';
@@ -98,7 +102,7 @@ Weekly Trend:   ${stockData?.weeklyTrend ?? 'N/A'}
 
 INDICATORS:
   EMA  20/50/200:  ${fmtPrice(ind.ema20)} / ${fmtPrice(ind.ema50)} / ${fmtPrice(ind.ema200)}
-  RSI (14):        ${fmt(ind.rsi14)}   (40–65 is the BUY zone)
+  RSI (14):        ${fmt(ind.rsi14)}   (${RSI_MIN}–${RSI_MAX} = BUY zone; a bit higher is OK for a confirmed breakout)
   MACD/Signal/Hist:${fmt(ind.macd)} / ${fmt(ind.macdSignal)} / ${fmt(ind.macdHist)}
   ATR (14):        ${fmt(ind.atr14)}
   Bollinger %B:    ${fmt(ind.bbPctB, 3)}
@@ -124,7 +128,7 @@ ${resistances}
 FIBONACCI (60-bar swing):
   38.2%: ${fmtPrice(fib.fib382)}   50.0%: ${fmtPrice(fib.fib50)}   61.8%: ${fmtPrice(fib.fib618)}
 
-SUGGESTED TRADE LEVELS:
+SUGGESTED TRADE LEVELS (a PULLBACK default — override with a breakout entry for momentum setups; see RULES):
   Entry:     ${fmtPrice(stockData?.suggestedEntry)}
   Stop Loss: ${fmtPrice(stockData?.suggestedStopLoss)}
   Target 1:  ${fmtPrice(stockData?.suggestedTarget1)}
@@ -136,8 +140,11 @@ function scoreSection(gateResult) {
     .map((b) => `  ${b.points > 0 ? '+' : ''}${b.points}  ${b.label}`)
     .join('\n');
   const tags = (gateResult?.tags ?? []).join(', ') || 'none';
+  // Confidence bands are derived from the system's own calibrated thresholds (not
+  // hardcoded) so the prompt can never drift from SCORE_HIGH_CONFIDENCE again.
+  const bands = `(≥${SCORE_HIGH_CONFIDENCE} HIGH, ${SCORE_MEDIUM_CONFIDENCE}–${SCORE_HIGH_CONFIDENCE - 1} MEDIUM, <${SCORE_MEDIUM_CONFIDENCE} LOW)`;
   return `═══════════════ COMPOSITE SCORE ═══════════════
-Score: ${gateResult?.compositeScore ?? 'N/A'}/100   (≥70 HIGH, 50–69 MEDIUM, <50 LOW)
+Score: ${gateResult?.compositeScore ?? 'N/A'}/100   ${bands}
 Active signals/tags: ${tags}
 Breakdown:
 ${breakdown || '  (base only)'}`;
@@ -185,6 +192,19 @@ Return EXACTLY this JSON (no markdown, no extra prose):
 
 RULES:
 - verdict=BUY ONLY with confidence=HIGH. Never BUY with MEDIUM or LOW.
+- ENTRY STRATEGY — pick by setup type. The SUGGESTED TRADE LEVELS above are a default
+  PULLBACK plan you MAY override:
+  • MOMENTUM_BREAKOUT (price above all EMAs, near the 52-week high, positive 6-month
+    momentum & relative strength): a breakout entry AT or just above the current price is
+    valid. Set entryZone near current price (low ≈ current, high ≈ current + 0.3×ATR) and
+    stopLoss just below the nearest structure (recent swing low / EMA 20 / current − 1.5×ATR).
+    Do NOT demand a pullback to distant support, and do NOT treat a high Bollinger %B or
+    52-week-high proximity as "overbought/chasing" — those are EXPECTED in a healthy breakout.
+  • PULLBACK_TO_SUPPORT / MEAN_REVERSION: require a pullback entry into the support/Fib zone.
+- "Extended above the suggested entry" is NOT by itself a reason to WAIT on a confirmed
+  momentum setup. Only WAIT-for-pullback when a structure-based stop at the current price
+  would push riskReward < 2 (genuinely overextended, no room for a sensible stop). If a
+  breakout entry still yields riskReward ≥ 2, prefer BUY over WAIT.
 - If in doubt, WAIT (give the condition) or SKIP (give the reason).
 - All prices ≥ 0.01, rounded to 2 dp. riskReward = (target1 − entryZone.high) / (entryZone.high − stopLoss).`;
 

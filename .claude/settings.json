@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:alvarezquanttrading.com)",
+      "WebFetch(domain:resonanzcapital.com)",
+      "Bash(powershell -Command \"Write-Output 'Ready for adversarial search phase'\")",
+      "WebFetch(domain:volity.io)",
+      "WebFetch(domain:thepatternsite.com)",
+      "Bash(npm run *)",
+      "Bash(docker info *)",
+      "Bash(docker compose *)",
+      "PowerShell(netstat -ano | Select-String \":5000\" | ForEach-Object { $_.Split\\(\\)[-1] } | ForEach-Object { taskkill /PID $_ /F 2>$null } | Out-Null; Write-Host \"Port 5000 cleared\")",
+      "PowerShell(Start-Sleep -Seconds 3; try { \\(Invoke-WebRequest -Uri http://localhost:5000/health -ErrorAction Stop\\).Content } catch { \"Node server not responding: $_\" })",
+      "PowerShell(Get-Process -Name node -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force)",
+      "PowerShell(\"Process killed\")",
+      "PowerShell(Start-Sleep -Seconds 4; try { Invoke-WebRequest -Uri http://localhost:5000/health | ConvertTo-Json } catch { \"Health check failed: $_\" })",
+      "PowerShell(curl -s http://localhost:5000/health)",
+      "Bash(curl -s http://localhost:5000/health)",
+      "Bash(curl -s http://localhost:5000/api/analysis/TCS)",
+      "Bash(curl -s -m 30 http://localhost:5000/api/analysis/INFY)",
+      "Bash(curl -s http://localhost:8001/health)",
+      "Bash(timeout 45 curl -s http://localhost:5000/api/analysis/INFY)",
+      "Bash(timeout 60 curl -s http://localhost:5000/api/analysis/INFY)",
+      "Bash(curl -v http://localhost:5000/health)",
+      "Bash(timeout 70 curl -s \"http://localhost:5000/api/analysis/INFY\")",
+      "Bash(timeout 30 curl -v http://localhost:5000/health)",
+      "Bash(cd /c/Users/varun.chaudhari/my-projects/TradeZen/server *)",
+      "Read(//c/Users/varun.chaudhari/my-projects/client/src/services/**)",
+      "Bash(curl -s --max-time 80 http://localhost:5000/api/analysis/TCS)",
+      "Bash(curl -s -m 5 http://localhost:5000/health)",
+      "Bash(timeout 120 curl -s http://localhost:5000/api/analysis/INFY)",
+      "Bash(curl -s -m 3 http://localhost:5000/health)",
+      "Bash(python3 -m json.tool)",
+      "Bash(node --check src/services/backtestEngine.js)",
+      "Bash(timeout 30 curl -v http://localhost:5000/api/analysis/INFY)",
+      "Bash(echo \"exit:$?\")",
+      "Bash(node server/scripts/../scripts/../src/..)",
+      "Bash(curl -s -m 10 http://localhost:8001/analyze -X POST -H \"Content-Type: application/json\" -d '{\"symbols\": [\"INFY\"]}')"
+    ]
+  }
+}

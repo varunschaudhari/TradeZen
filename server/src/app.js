@@ -37,6 +37,8 @@ import scannerRouter from './routes/scanner.js';
 import scanRouter from './routes/scan.js';
 import testRouter from './routes/test.js';
 import marketSignalsRouter from './routes/marketSignals.js';
+import analysisRouter from './routes/analysis.js';
+import monitorRouter from './routes/monitor.js';
 
 dotenv.config();
 
@@ -71,6 +73,8 @@ app.use('/api/scanner', scannerRouter);
 app.use('/api/scan', scanRouter);
 app.use('/api/test', testRouter);
 app.use('/api/market-signals', marketSignalsRouter);
+app.use('/api/analysis', analysisRouter);
+app.use('/api/monitor', monitorRouter);
 
 app.use(errorHandler);
 

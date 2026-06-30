@@ -33,7 +33,7 @@ import {
   PROXIMITY_52W_HIGH_PCT,
   RISK_REWARD_MIN,
   RS_GATE2_MIN,
-  RS_LEADER,
+  RS_STRONG_LEADER,
   RSI_MAX,
   RSI_MEAN_REVERSION,
   RSI_MIN,
@@ -125,7 +125,11 @@ function checkGate4(stockData) {
   // rsi < RSI_MIN — check the mean-reversion exception (still up long-term, near lower band)
   const price = stockData?.currentPrice ?? stockData?.price;
   const ema200 = ind.ema200;
+  const ema50 = ind.ema50;
   const bbB = ind.bbPctB;
+  const macd = ind.macd;
+  const macdSignal = ind.macdSignal;
+
   const meanReversion =
     rsi < RSI_MEAN_REVERSION &&
     bbB != null &&
@@ -140,16 +144,32 @@ function checkGate4(stockData) {
       reason: `RSI ${rsi.toFixed(1)} oversold but above EMA200 — mean-reversion setup`,
     };
   }
+
+  // NEW: RSI bounce detection — RSI 25-40 with momentum confirmation
+  // Catches early oversold bounces IF price is recovering and momentum is positive
+  const rsiInBounceZone = rsi >= 25 && rsi < RSI_MIN;
+  const priceRecovering = price != null && ema50 != null && price > ema50;
+  const momentumPositive = macd != null && macdSignal != null && macd > macdSignal;
+
+  if (rsiInBounceZone && priceRecovering && momentumPositive) {
+    return {
+      passed: true,
+      tag: 'RSI_BOUNCE',
+      reason: `RSI ${rsi.toFixed(1)} oversold bounce with MACD confirmation — price above EMA50`,
+    };
+  }
+
   return {
     passed: false,
     tag: 'OVERSOLD',
-    reason: `RSI ${rsi.toFixed(1)} < ${RSI_MIN} — oversold, momentum not ready`,
+    reason: `RSI ${rsi.toFixed(1)} < ${RSI_MIN} — oversold, no momentum confirmation`,
   };
 }
 
 // ── Gate 5: Volume confirmation (+ Simons volume anomaly) — STRONG FILTER ───────
 function checkGate5(stockData) {
   const vol = stockData?.indicators?.volRatio;
+  const dayChangePct = stockData?.dayChangePct;
   // Volume anomaly is computed by simonsSignals.js (needs 3-day history); honor it if present.
   const volumeAnomaly = stockData?.volumeAnomaly === true;
   if (vol == null) {
@@ -169,6 +189,21 @@ function checkGate5(stockData) {
       reason: `Volume ${vol.toFixed(2)}× but 3-day anomaly detected`,
     };
   }
+
+  // NEW: Accumulation pattern detection — elevated volume + price rising
+  // Captures smart money entering even if not at 1.5× yet (catches early accumulation)
+  const accumulationThreshold = 1.2; // Lower than VOLUME_RATIO_MIN
+  const priceRising = dayChangePct != null && dayChangePct > 0;
+  const volumeElevated = vol >= accumulationThreshold;
+
+  if (volumeElevated && priceRising) {
+    return {
+      passed: true,
+      tag: 'ACCUMULATION',
+      reason: `Volume ${vol.toFixed(2)}× elevated + price rising — accumulation pattern detected`,
+    };
+  }
+
   return {
     passed: false,
     volumeAnomaly,
@@ -208,13 +243,39 @@ function checkGate6(stockData) {
   };
 }
 
-// ── Gate 7: Claude confidence === HIGH — INTELLIGENCE LAYER (post-Claude) ────────
-export const checkGate7 = (claudeResult) => {
+// ── Gate 7: Claude confidence (market-mode adaptive) — INTELLIGENCE LAYER (post-Claude) ────────
+// BULL: Accept MEDIUM (more opportunities). CAUTION: Require HIGH (defensive). BEAR: Skip BUY entirely.
+export const checkGate7 = (claudeResult, marketData) => {
   const confidence = claudeResult?.confidence;
+  const marketMode = marketData?.marketMode;
+
+  // BEAR mode: no BUY signals allowed
+  if (marketMode === 'BEAR') {
+    return {
+      passed: false,
+      reason: `Market in BEAR mode — BUY signals paused, only WAIT/SKIP allowed`,
+    };
+  }
+
+  // BULL mode: accept MEDIUM or better (more signals, still safe)
+  if (marketMode === 'BULL') {
+    if (confidence === CONFIDENCE_LEVELS.HIGH || confidence === CONFIDENCE_LEVELS.MEDIUM) {
+      return {
+        passed: true,
+        reason: `Bull market: Claude ${confidence} confidence accepted for BUY`,
+      };
+    }
+    return {
+      passed: false,
+      reason: `Bull market requires at least ${CONFIDENCE_LEVELS.MEDIUM} confidence, got ${confidence}`,
+    };
+  }
+
+  // CAUTION (default): require HIGH confidence (conservative)
   if (confidence !== CONFIDENCE_LEVELS.HIGH) {
     return {
       passed: false,
-      reason: `Claude confidence ${confidence ?? 'UNKNOWN'} — requires HIGH for a BUY`,
+      reason: `Caution mode: requires HIGH confidence, got ${confidence}`,
     };
   }
   return { passed: true, reason: 'Claude confidence HIGH — intelligence layer passed' };
@@ -272,6 +333,8 @@ function findNegativeKeyword(headlines) {
 export const calculateCompositeScore = (stockData, marketData, newsData, extras = {}) => {
   const ind = stockData?.indicators ?? {};
   const price = stockData?.currentPrice ?? stockData?.price ?? null;
+  const rsi = ind.rsi14 ?? null;
+  const rsiSweet = rsi != null && rsi >= RSI_MIN && rsi <= RSI_MAX;
   const rs = stockData?.relativeStrength ?? stockData?.rs ?? null;
   const pcRatio = marketData?.pcRatio ?? null;
   const fiiTrend = marketData?.fiiTrend ?? null;
@@ -285,16 +348,19 @@ export const calculateCompositeScore = (stockData, marketData, newsData, extras 
   const P = COMPOSITE_POINTS;
 
   const rules = [
+    // ── Measured price-signal edge (carry the score today) ──
+    { on: rsiSweet, pts: P.RSI_SWEET_SPOT, label: `RSI ${rsi?.toFixed(0)} in sweet spot (${RSI_MIN}–${RSI_MAX})` },
     {
-      on: extras.volumeAnomaly === true,
-      pts: P.VOLUME_ANOMALY,
-      label: 'Volume anomaly (3×+ cumulative)',
+      on: rs != null && rs >= RS_STRONG_LEADER,
+      pts: P.RS_STRONG_LEADER,
+      label: `Relative strength ${rs} ≥ ${RS_STRONG_LEADER} (strong leader)`,
     },
     {
-      on: rs != null && rs > RS_LEADER,
-      pts: P.RS_LEADER,
-      label: `Relative strength ${rs} > ${RS_LEADER}`,
+      on: proximity != null && proximity < PROXIMITY_52W_HIGH_PCT && rsiSweet,
+      pts: P.NEAR_52W_HIGH,
+      label: 'Near 52W high with healthy RSI',
     },
+    // ── External signals (contribute only once their data feeds are wired) ──
     { on: fiiTrend === 'BUYING', pts: P.FII_BUYING, label: 'FII net buyer 3+ days' },
     {
       on: stockData?.promoterChange === 'INCREASED',
@@ -314,11 +380,6 @@ export const calculateCompositeScore = (stockData, marketData, newsData, extras 
       label: `P/C ratio ${pcRatio} > ${PC_RATIO_FEAR}`,
     },
     {
-      on: proximity != null && proximity < PROXIMITY_52W_HIGH_PCT,
-      pts: P.NEAR_52W_HIGH,
-      label: 'Within 5% of 52W high',
-    },
-    {
       on: candle != null && BULLISH_CANDLE_PATTERNS.includes(candle),
       pts: P.BULLISH_CANDLE,
       label: `Bullish candle (${candle})`,
@@ -327,6 +388,17 @@ export const calculateCompositeScore = (stockData, marketData, newsData, extras 
       on: stockData?.macdHistogramRising === true,
       pts: P.MACD_RISING,
       label: 'MACD histogram rising 3+ days',
+    },
+    // ── Penalties (measured-dilutive conditions) ──
+    {
+      on: rsi != null && rsi > RSI_MAX,
+      pts: P.RSI_OVERBOUGHT,
+      label: `RSI ${rsi?.toFixed(0)} overbought (>${RSI_MAX})`,
+    },
+    {
+      on: bbB != null && bbB > BB_OVERBOUGHT,
+      pts: P.BB_OVERBOUGHT,
+      label: `Bollinger %B ${bbB} > ${BB_OVERBOUGHT}`,
     },
     { on: fiiTrend === 'SELLING', pts: P.FII_SELLING, label: 'FII net seller 3+ days' },
     {
@@ -339,11 +411,6 @@ export const calculateCompositeScore = (stockData, marketData, newsData, extras 
       on: marketData?.niftyDownStreak === true,
       pts: P.NIFTY_DOWN_STREAK,
       label: 'Nifty down 2+ days',
-    },
-    {
-      on: bbB != null && bbB > BB_OVERBOUGHT,
-      pts: P.BB_OVERBOUGHT,
-      label: `Bollinger %B ${bbB} > ${BB_OVERBOUGHT}`,
     },
   ];
 
@@ -388,6 +455,7 @@ export const runAllGates = (stockData, marketData, newsData) => {
   let hardBlockFired = false;
   let earningsWarning = false;
   let volumeAnomaly = false;
+  let softGatesFailed = 0;
 
   for (const { n, fn } of checks) {
     let result;
@@ -403,6 +471,7 @@ export const runAllGates = (stockData, marketData, newsData) => {
     if (result.volumeAnomaly) volumeAnomaly = true;
     if (result.passed) gatesPassed += 1;
     else if (HARD_BLOCK_GATES.has(n)) hardBlockFired = true;
+    else if (!result.passed && (n === 4 || n === 5)) softGatesFailed += 1;
   }
 
   gateDetails.gate7 = { passed: false, reason: 'Pending Claude API call' };
@@ -435,6 +504,7 @@ export const runAllGates = (stockData, marketData, newsData) => {
     gatesPassed,
     gateDetails,
     hardBlockFired,
+    softGatesFailed,
     shouldCallClaude,
     tags,
     compositeScore: score,

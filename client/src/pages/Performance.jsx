@@ -86,6 +86,22 @@ const Performance = () => {
         <div className="card border-red-500/30 bg-red-500/10 text-red-400">{error}</div>
       )}
 
+      {/* Honest-status banner — paper/research tool, edge not yet validated */}
+      <div className="card border-l-4 border-l-wait bg-wait/[0.06] flex items-start gap-3 text-sm">
+        <span className="text-wait text-lg leading-none mt-0.5">⚠</span>
+        <div>
+          <p className="font-semibold text-slate-200">Paper mode · edge not yet validated</p>
+          <p className="text-slate-400 mt-0.5">
+            {(perf?.totalTrades ?? 0) < 20
+              ? `Only ${perf?.totalTrades ?? 0} closed trade${(perf?.totalTrades ?? 0) === 1 ? '' : 's'} — these stats are not yet statistically meaningful. `
+              : ''}
+            Backtesting found no robust, cost-surviving edge in price signals, and confidence/scores
+            aren&rsquo;t yet calibrated. Treat this as a research record — not proof of profitability —
+            until the weekly calibration review and the go-live gate pass.
+          </p>
+        </div>
+      </div>
+
       {/* Key stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard
@@ -144,7 +160,15 @@ const Performance = () => {
         </h3>
 
         {closedTrades.length === 0 ? (
-          <p className="text-slate-500 text-sm text-center py-8">No closed trades yet</p>
+          <div className="text-center py-10">
+            <p className="text-4xl mb-3">📈</p>
+            <p className="text-slate-400 font-medium">No closed trades yet</p>
+            <p className="text-slate-500 text-sm mt-1 max-w-md mx-auto">
+              Logged trades show up here once closed. As this paper record grows, the stats above
+              and the weekly calibration review become statistically meaningful — that&rsquo;s the
+              data the system needs to actually improve.
+            </p>
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs text-left">

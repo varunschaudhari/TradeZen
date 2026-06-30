@@ -13,6 +13,9 @@ const tradeSchema = new mongoose.Schema(
   {
     symbol: { type: String, required: true, uppercase: true, index: true },
     signalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Signal' },
+    // MANUAL = user-logged; AUTO = auto-opened paper trade from a BUY signal. AUTO trades
+    // are subject to the max-hold time exit; manual trades are never auto-closed on time.
+    source: { type: String, enum: ['MANUAL', 'AUTO'], default: 'MANUAL', index: true },
     status: {
       type: String,
       enum: Object.values(TRADE_STATUSES),

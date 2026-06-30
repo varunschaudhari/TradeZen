@@ -16,6 +16,8 @@ import MarketStatusBar from '../components/MarketStatusBar.jsx';
 import SignalCard from '../components/SignalCard.jsx';
 import KpiCard from '../components/KpiCard.jsx';
 import ChartPreviewModal from '../components/ChartPreviewModal.jsx';
+import WatchlistPrep from '../components/WatchlistPrep.jsx';
+import ActionHero from '../components/ActionHero.jsx';
 import useSignals from '../hooks/useSignals.js';
 import useMarketStatus from '../hooks/useMarketStatus.js';
 import useSocket from '../hooks/useSocket.js';
@@ -25,8 +27,8 @@ import { SOCKET_EVENTS } from '../utils/constants.js';
 import { timeAgo, formatCurrency, formatPercent } from '../utils/formatters.js';
 import { signalsApi, performanceApi, universeApi } from '../services/api.js';
 
-const MAX_OPEN_TRADES = 3;       // mirrors backend constants.js
-const MAX_CAPITAL_PCT = 60;      // mirrors MAX_CAPITAL_DEPLOYED_PCT
+const MAX_OPEN_TRADES = 15;      // mirrors backend constants.js
+const MAX_CAPITAL_PCT = 95;      // mirrors MAX_CAPITAL_DEPLOYED_PCT
 const VERDICT_ORDER = { BUY: 0, WAIT: 1, SKIP: 2 };
 const SYMBOL_RE = /^[A-Z]{1,20}$/;
 
@@ -290,6 +292,15 @@ const Dashboard = () => {
         </div>
       </header>
 
+      {/* ── Today's action — the headline "what do I do now?" ────────────── */}
+      <ActionHero
+        buyCount={counts.BUY}
+        waitCount={counts.WAIT}
+        totalSignals={counts.ALL}
+        market={market}
+        onViewBuys={() => setFilter('BUY')}
+      />
+
       {/* ── Market status ────────────────────────────────────────────────── */}
       <MarketStatusBar market={market} />
 
@@ -337,6 +348,9 @@ const Dashboard = () => {
           hint={`Capital tied up in open positions. The system won't deploy beyond ${MAX_CAPITAL_PCT}% of total capital.`}
         />
       </div>
+
+      {/* ── Next-session watchlist (EOD prep — self-hides when empty) ──────── */}
+      <WatchlistPrep />
 
       {/* ── Signals section ──────────────────────────────────────────────── */}
       <section className="space-y-3">

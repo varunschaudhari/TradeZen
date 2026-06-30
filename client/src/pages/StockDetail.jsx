@@ -8,8 +8,9 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import CandlestickChart from '../components/CandlestickChart.jsx';
+import MeterBar from '../components/MeterBar.jsx';
 import NewsWidget from '../components/NewsWidget.jsx';
 import LogTradeModal from '../components/LogTradeModal.jsx';
 import useCandleData from '../hooks/useCandleData.js';
@@ -108,6 +109,7 @@ const StockDetail = () => {
         </button>
         <div className="flex items-center gap-2">
           <button onClick={load} className="btn-ghost text-sm">Refresh</button>
+          <Link to={`/analysis/${sym}`} className="btn-primary text-sm">📊 Analyze</Link>
           <button onClick={() => setShowLog(true)} className="btn-success text-sm">+ Log Trade</button>
         </div>
       </div>
@@ -195,9 +197,37 @@ const StockDetail = () => {
           />
 
           <Section title="Technical indicators">
-            <div className="grid grid-cols-3 sm:grid-cols-4 gap-y-4 gap-x-3">
-              <Metric label="RSI (14)" value={fmt(ind.rsi14, 1)}
-                color={ind.rsi14 == null ? 'text-slate-100' : ind.rsi14 > 65 ? 'text-bear' : ind.rsi14 < 40 ? 'text-wait' : 'text-bull'} />
+            {/* Visual gauges for the signals a trader reads first */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-3 mb-4">
+              <MeterBar
+                label="RSI (14)"
+                value={ind.rsi14}
+                valueText={fmt(ind.rsi14, 1)}
+                min={0}
+                max={100}
+                band={[40, 65]}
+                tone={ind.rsi14 == null ? 'neutral' : ind.rsi14 > 65 ? 'bad' : ind.rsi14 < 40 ? 'warn' : 'good'}
+              />
+              <MeterBar
+                label="Bollinger %B"
+                value={ind.bbPctB}
+                valueText={fmt(ind.bbPctB, 2)}
+                min={0}
+                max={1}
+                band={[0.2, 0.8]}
+                tone={ind.bbPctB == null ? 'neutral' : ind.bbPctB > 0.85 ? 'bad' : ind.bbPctB < 0.2 ? 'warn' : 'good'}
+              />
+              <MeterBar
+                label="Volume ratio"
+                value={ind.volRatio}
+                valueText={fmt(ind.volRatio, 2) + '×'}
+                min={0}
+                max={3}
+                band={[1.5, 3]}
+                tone={(ind.volRatio ?? 0) >= 1.5 ? 'good' : (ind.volRatio ?? 0) >= 1 ? 'neutral' : 'warn'}
+              />
+            </div>
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-y-4 gap-x-3 border-t border-slate-700/50 pt-4">
               <Metric label="MACD" value={fmt(ind.macd)} />
               <Metric label="MACD signal" value={fmt(ind.macdSignal)} />
               <Metric label="MACD hist" value={fmt(ind.macdHist)}
@@ -206,9 +236,6 @@ const StockDetail = () => {
               <Metric label="EMA 50" value={formatCurrency(ind.ema50, 0)} />
               <Metric label="EMA 200" value={formatCurrency(ind.ema200, 0)} />
               <Metric label="ATR (14)" value={fmt(ind.atr14)} />
-              <Metric label="Vol ratio" value={fmt(ind.volRatio, 2) + '×'}
-                color={(ind.volRatio ?? 0) >= 1.5 ? 'text-bull' : 'text-slate-100'} />
-              <Metric label="Bollinger %B" value={fmt(ind.bbPctB, 2)} />
               {ind.candlePattern && <Metric label="Candle" value={ind.candlePattern} />}
             </div>
           </Section>
@@ -258,8 +285,37 @@ const StockDetail = () => {
           </div>
         </div>
 
-        {/* Right: signal + news */}
+        {/* Right: signal + Simons + news */}
         <div className="space-y-5">
+          {/* Simons score section (from latest signal) */}
+          {signal?.simonsScore != null && (
+            <Section title="Simons composite score">
+              <div className="space-y-3">
+                <div className="flex items-end justify-between">
+                  <span className="text-3xl font-mono font-bold text-accent">
+                    {Math.round(signal.simonsScore)}
+                  </span>
+                  <span className="text-xs text-slate-500">out of 100</span>
+                </div>
+                {Array.isArray(signal.simonsBreakdown) && signal.simonsBreakdown.length > 0 && (
+                  <div className="border-t border-slate-700/60 pt-2 space-y-1">
+                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Contributions</p>
+                    <div className="space-y-1 text-xs">
+                      {signal.simonsBreakdown.map((sb, i) => (
+                        <div key={i} className="flex justify-between">
+                          <span className="text-slate-400">{sb.label}</span>
+                          <span className={`font-mono ${sb.points > 0 ? 'text-bull' : 'text-bear'}`}>
+                            {sb.points > 0 ? '+' : ''}{sb.points}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </Section>
+          )}
+
           {signal ? (
             <Section title="Latest signal">
               {signal.verdict === 'BUY' && (
@@ -292,6 +348,26 @@ const StockDetail = () => {
                   );
                 })}
               </div>
+
+              {signal.simonOverride && (
+                <div className="border-t border-accent/30 bg-accent/5 pt-2 -mx-3 px-3 py-2 mt-2 rounded">
+                  <p className="text-[11px] uppercase tracking-wide text-accent mb-1">✨ Simons override</p>
+                  <p className="text-xs text-slate-300 leading-relaxed">{signal.simonOverride.reason}</p>
+                </div>
+              )}
+
+              {/* Python suggested vs Claude chosen comparison */}
+              {!signal.entryZone && detail?.suggestedEntry && (
+                <div className="border-t border-slate-700/60 pt-2 mt-2">
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">Python suggested levels</p>
+                  <div className="grid grid-cols-2 gap-y-1.5 gap-x-2 text-xs">
+                    <div className="flex justify-between"><span className="text-slate-400">Entry</span> <span className="font-mono text-slate-300">{formatCurrency(detail.suggestedEntry, 0)}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-400">Stop</span> <span className="font-mono text-bear">{formatCurrency(detail.suggestedStopLoss, 0)}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-400">T1</span> <span className="font-mono text-bull">{formatCurrency(detail.suggestedTarget1, 0)}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-400">T2</span> <span className="font-mono text-bull">{formatCurrency(detail.suggestedTarget2, 0)}</span></div>
+                  </div>
+                </div>
+              )}
 
               {signal.reasoning && (
                 <div className="border-t border-slate-700/60 pt-2">

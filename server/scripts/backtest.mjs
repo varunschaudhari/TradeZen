@@ -44,11 +44,11 @@ const run = async () => {
 
   // ── Overall comparison ──────────────────────────────────────────────────────
   console.log('=== OVERALL (by hold mode) ===');
-  console.log('  mode      trades   winRate     avgR   avgHold(bars)');
+  console.log('  mode      trades   winRate    avgR(gross)  avgCost   avgR(NET)  avgHold');
   for (const m of MODES) {
     const o = res.results[m].overall;
     console.log(
-      `  ${m.padEnd(9)} ${String(o.trades).padStart(5)}   ${pct(o.winRate)}   ${String(o.avgR).padStart(6)}   ${String(o.avgHold).padStart(6)}`
+      `  ${m.padEnd(9)} ${String(o.trades).padStart(5)}   ${pct(o.winRate)}   ${String(o.avgR).padStart(8)}  ${String(o.avgCost).padStart(7)}  ${String(o.avgRNet).padStart(8)}  ${String(o.avgHold).padStart(6)}`
     );
   }
 
@@ -62,13 +62,13 @@ const run = async () => {
     );
   }
 
-  // ── Score-bucket calibration (does score predict winners, in any hold mode?) ──
-  console.log('\n=== WIN RATE BY COMPOSITE SCORE × HOLD MODE ===');
+  // ── Score-bucket calibration: gross vs NET (does edge survive costs, by score?) ──
+  console.log('\n=== COMPOSITE SCORE × HOLD MODE (gross → NET of costs) ===');
   for (const m of MODES) {
     console.log(`  [${m}]`);
     for (const [bucket, b] of Object.entries(res.results[m].byScoreBucket)) {
       console.log(
-        `    ${bucket.padEnd(6)} trades=${String(b.trades).padStart(4)}  winRate=${pct(b.winRate)}  avgR=${String(b.avgR).padStart(6)}`
+        `    ${bucket.padEnd(6)} trades=${String(b.trades).padStart(4)}  winRate=${pct(b.winRate)}  avgR=${String(b.avgR).padStart(6)} → NET ${String(b.avgRNet).padStart(6)} (cost ${b.avgCost})`
       );
     }
   }

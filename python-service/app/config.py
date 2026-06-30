@@ -80,11 +80,11 @@ WEEKLY_SIDEWAYS: str = "SIDEWAYS"
 # yfinance history window for screening — needs > 200 bars for EMA200 trend filter
 SCREEN_PERIOD: str = "1y"
 SCREEN_BATCH_SIZE: int = 50          # symbols per yfinance multi-download chunk
-SCREEN_MIN_BARS: int = 60            # skip a symbol if fewer daily bars than this
+SCREEN_MIN_BARS: int = 40            # skip a symbol if fewer daily bars than this (relaxed)
 
 # Pre-filter 1 — Liquidity: average daily turnover (close × volume) over lookback
 LIQUIDITY_LOOKBACK_DAYS: int = 20
-MIN_AVG_TURNOVER_INR: float = 50_000_000.0   # ₹5 crore avg daily turnover floor
+MIN_AVG_TURNOVER_INR: float = 10_000_000.0   # ₹1 crore avg daily turnover floor (relaxed)
 
 # Pre-filter 2 — Market cap: index-tier proxy (constituents carry a tier tag).
 # Default allows every tier; callers may restrict (e.g. exclude SMALLCAP).

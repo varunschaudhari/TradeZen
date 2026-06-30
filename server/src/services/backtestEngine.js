@@ -21,6 +21,7 @@
  */
 
 import {
+  BACKTEST_COST_STATUTORY_PCT,
   BACKTEST_ENTRY_EMA20_BAND,
   BACKTEST_HOLD_BUFFER,
   BACKTEST_HOLD_DAYS,
@@ -28,6 +29,9 @@ import {
   BACKTEST_HOLD_MIN_DAYS,
   BACKTEST_PERIOD,
   BACKTEST_SL_ATR_MULT,
+  BACKTEST_SLIPPAGE_ATR_MULT,
+  BACKTEST_SLIPPAGE_MAX_PCT,
+  BACKTEST_SLIPPAGE_MIN_PCT,
   BACKTEST_WARMUP_BARS,
   BB_OVERBOUGHT,
   PROXIMITY_52W_HIGH_PCT,
@@ -269,16 +273,37 @@ function extractSignalFlags(simons, gate, ind, proximityPct) {
  * @param {number} holdDays - max bars to hold before a time exit (from holdWindowDays)
  * @returns {{ entry:number, exitIdx:number, reason:string, rMultiple:number, holdBars:number }|null}
  */
+/**
+ * Round-trip transaction cost in R (risk units). Statutory NSE delivery costs (per side)
+ * plus ATR-scaled slippage (volatility as liquidity proxy → mid/small-caps cost more).
+ * Dividing the %-of-notional cost by planned risk converts it to R.
+ * @param {number} entry - actual entry fill
+ * @param {number|null} atr - ATR at entry
+ * @param {number} risk - planned risk per share (entry − stop)
+ * @returns {number} positive cost in R, to subtract from gross R
+ */
+function tradeCostInR(entry, atr, risk) {
+  if (!(entry > 0) || !(risk > 0)) return 0;
+  const atrPct = atr > 0 ? (atr / entry) * 100 : 2; // ~2% fallback when ATR missing
+  const slipPerSide = Math.min(
+    BACKTEST_SLIPPAGE_MAX_PCT,
+    Math.max(BACKTEST_SLIPPAGE_MIN_PCT, BACKTEST_SLIPPAGE_ATR_MULT * atrPct)
+  );
+  const roundTripPct = 2 * (BACKTEST_COST_STATUTORY_PCT + slipPerSide); // buy + sell
+  return ((roundTripPct / 100) * entry) / risk;
+}
+
 function simulateTrade(series, signalIdx, levels, holdDays) {
   const entryIdx = signalIdx + 1;
   const n = series.close.length;
   if (entryIdx >= n) return null;
   const entry = series.open[entryIdx];
   if (entry == null) return null;
-  const { sl, t1, t2, risk } = levels;
+  const { sl, t1, t2, risk, atr } = levels;
   const last = Math.min(entryIdx + holdDays, n - 1);
   const R = (price) => round2((price - entry) / risk);
   const held = (exitIdx) => exitIdx - entryIdx + 1;
+  const costInR = round2(tradeCostInR(entry, atr, risk)); // constant per trade (fill/risk/ATR)
 
   let firstHalfR = null; // null until T1 books the first half
   let stop = sl;
@@ -294,6 +319,7 @@ function simulateTrade(series, signalIdx, levels, holdDays) {
         exitIdx: k,
         reason: firstHalfR == null ? 'SL' : 'TRAIL',
         rMultiple: round2(r),
+        costInR,
         holdBars: held(k),
       };
     }
@@ -308,13 +334,14 @@ function simulateTrade(series, signalIdx, levels, holdDays) {
         exitIdx: k,
         reason: 'T2',
         rMultiple: round2((firstHalfR + R(t2)) / 2),
+        costInR,
         holdBars: held(k),
       };
     }
   }
   const exitR = R(series.close[last]);
   const r = firstHalfR == null ? exitR : (firstHalfR + exitR) / 2;
-  return { entry, exitIdx: last, reason: 'TIME', rMultiple: round2(r), holdBars: held(last) };
+  return { entry, exitIdx: last, reason: 'TIME', rMultiple: round2(r), costInR, holdBars: held(last) };
 }
 
 /**
@@ -395,15 +422,20 @@ async function backtestSymbol(symbol, niftySeries, opts) {
  */
 function aggregate(trades) {
   const summarize = (list) => {
-    if (!list.length) return { trades: 0, winRate: 0, avgR: 0, expectancy: 0, avgHold: 0 };
+    if (!list.length) {
+      return { trades: 0, winRate: 0, avgR: 0, avgRNet: 0, avgCost: 0, expectancy: 0, avgHold: 0 };
+    }
     const wins = list.filter((t) => t.rMultiple > 0).length;
     const sumR = list.reduce((s, t) => s + t.rMultiple, 0);
+    const sumCost = list.reduce((s, t) => s + (t.costInR ?? 0), 0);
     const sumHold = list.reduce((s, t) => s + (t.holdBars ?? 0), 0);
     return {
       trades: list.length,
       winRate: round2((wins / list.length) * 100),
-      avgR: round2(sumR / list.length),
-      expectancy: round2(sumR / list.length),
+      avgR: round2(sumR / list.length), // gross
+      avgRNet: round2((sumR - sumCost) / list.length), // net of transaction costs
+      avgCost: round2(sumCost / list.length),
+      expectancy: round2((sumR - sumCost) / list.length),
       avgHold: round2(sumHold / list.length),
     };
   };
@@ -492,6 +524,32 @@ export const runSignalEdge = async (symbols, opts = {}) => {
 };
 
 /**
+ * Collect the raw simulated trades (with signalFlags + rMultiple + costInR) for a symbol
+ * set under one hold mode. Used by the champion/challenger harness, which re-scores the
+ * SAME trades under different weightings — so the backtest runs once and any number of
+ * weight configs can be compared post-hoc.
+ *
+ * @param {string[]} symbols
+ * @param {object} [opts] - { period, holdMode }
+ * @returns {Promise<object[]>}
+ */
+export const collectBacktestTrades = async (symbols, opts = {}) => {
+  const period = opts.period ?? BACKTEST_PERIOD;
+  const mode = opts.holdMode ?? 'adaptive';
+  const niftySeries = await fetchNiftySeries(period);
+  const all = [];
+  for (const symbol of symbols) {
+    try {
+      const res = await backtestSymbol(symbol, niftySeries, { period, modes: [mode] });
+      all.push(...res[mode]);
+    } catch (err) {
+      logger.error(`collectBacktestTrades failed for ${symbol}`, { error: err.message });
+    }
+  }
+  return all;
+};
+
+/**
  * Run a walk-forward backtest over the given symbols, comparing one or more hold-modes
  * in a single data pass (yfinance fetch is the bottleneck, so we fetch each symbol once).
  *
@@ -526,3 +584,171 @@ export const runBacktest = async (symbols, opts = {}) => {
   });
   return { symbols: symbols.length, period, modes, results };
 };
+
+/**
+ * Single-setup backtest for analysis reports
+ * Replays explicit entry/SL/T1/T2 levels on past 2y of data
+ * @param {string} symbol
+ * @param {number} entry
+ * @param {number} stopLoss
+ * @param {number} target1
+ * @param {number} target2
+ * @returns {Promise<Object>} backtest stats
+ */
+export const backtestSetup = async (symbol, entry, stopLoss, target1, target2) => {
+  try {
+    const period = '2y';
+    const data = await fetchIndicatorSeries(symbol, period);
+    if (!data?.series?.date?.length) {
+      logger.warn(`Backtest setup: no data for ${symbol}`);
+      return null;
+    }
+
+    const series = data.series;
+    const risk = entry - stopLoss;
+    if (risk <= 0) {
+      logger.warn(`Invalid entry/SL for backtest: ${symbol}`, { entry, stopLoss });
+      return null;
+    }
+
+    // Realism model — shared with the research engine (simulateTrade): an entry triggers
+    // when price trades through the entry level on bar i, the fill is the NEXT bar's open
+    // (no intrabar look-ahead), then half is booked at T1 + the stop trails to entry, the
+    // rest rides to T2, and the stop fills first on a bar that straddles both (worst case).
+    // R is measured against the ACTUAL fill, so entry gaps/slippage are captured.
+    const trades = [];
+    const levels = { entry, sl: stopLoss, t1: target1, t2: target2, risk };
+    const MAX_HOLD = 15; // bars — the time-stop the report references
+    const n = series.close.length;
+    let seq = 0;
+    let i = 0;
+
+    while (i < n - 1) {
+      const lo = series.low[i];
+      const hi = series.high[i];
+      if (lo != null && hi != null && lo <= entry && hi >= entry) {
+        const sim = simulateTrade(series, i, levels, MAX_HOLD);
+        if (!sim) break; // no next bar to fill the entry on
+        // Map the engine's reasons onto the report's {T1,T2,SL,TIMEOUT} taxonomy.
+        // TRAIL = T1 booked, then the trailed half stopped at entry → the trade reached T1.
+        const exitType =
+          sim.reason === 'SL'
+            ? 'SL'
+            : sim.reason === 'T2'
+              ? 'T2'
+              : sim.reason === 'TRAIL'
+                ? 'T1'
+                : 'TIMEOUT';
+        const exitPrice =
+          exitType === 'SL'
+            ? stopLoss
+            : exitType === 'T2'
+              ? target2
+              : exitType === 'T1'
+                ? target1
+                : series.close[sim.exitIdx];
+        seq += 1;
+        trades.push({
+          sequenceNo: seq,
+          entryDate: series.date[i + 1] ?? series.date[i],
+          entryPrice: round2(sim.entry),
+          exitDate: series.date[sim.exitIdx],
+          exitPrice: round2(exitPrice),
+          exitType,
+          realizedR: sim.rMultiple,
+          holdingDays: sim.holdBars,
+          barsSincEntry: sim.holdBars,
+        });
+        i = sim.exitIdx + 1; // no overlapping trades — resume after this one closes
+      } else {
+        i += 1;
+      }
+    }
+
+    // Calculate stats
+    if (trades.length === 0) {
+      return {
+        symbol,
+        entry,
+        stopLoss,
+        target1,
+        target2,
+        tradesSimulated: 0,
+        winRate: 0,
+        winRateT1: 0,
+        winRateT2: 0,
+        avgRealizedRR: 0,
+        avgHoldingDays: 0,
+        performanceAssessment: 'NO_TRADES',
+      };
+    }
+
+    const winsT1 = trades.filter((t) => t.exitType === 'T1').length;
+    const winsT2 = trades.filter((t) => t.exitType === 'T2').length;
+    const losses = trades.filter((t) => t.exitType === 'SL').length;
+    const totalWins = winsT1 + winsT2;
+    const total = trades.length;
+
+    const winRate = round2((totalWins / total) * 100);
+    const winRateT1 = round2((winsT1 / total) * 100);
+    const winRateT2 = round2((winsT2 / total) * 100);
+
+    const avgR = round2(trades.reduce((s, t) => s + t.realizedR, 0) / total);
+    const avgHold = round2(trades.reduce((s, t) => s + t.holdingDays, 0) / total);
+
+    const largestWin = Math.max(...trades.map((t) => t.realizedR));
+    const largestLoss = Math.min(...trades.map((t) => t.realizedR));
+
+    let assessment = 'INSUFFICIENT_DATA';
+    if (total >= 5) {
+      if (winRate >= 60) assessment = 'EXCELLENT';
+      else if (winRate >= 55) assessment = 'GOOD';
+      else if (winRate >= 50) assessment = 'DECENT';
+      else assessment = 'POOR';
+    }
+
+    const result = {
+      symbol,
+      entry,
+      stopLoss,
+      target1,
+      target2,
+      tradesSimulated: total,
+      winsAtT1: winsT1,
+      winsAtT2: winsT2,
+      losses,
+      winRate,
+      winRateT1,
+      winRateT2,
+      avgRealizedRR: avgR,
+      avgHoldingDays: avgHold,
+      largestWin: round2(largestWin),
+      largestLoss: round2(largestLoss),
+      maxConsecutiveWins: calculateConsecutiveWins(trades),
+      performanceAssessment: assessment,
+      trades: trades.slice(-20), // keep last 20 trades for detail
+    };
+
+    return result;
+  } catch (err) {
+    logger.error('Backtest setup failed', { symbol, entry, stopLoss, error: err.message });
+    return null;
+  }
+};
+
+/**
+ * Calculate max consecutive wins from trades
+ */
+function calculateConsecutiveWins(trades) {
+  let maxWins = 0;
+  let currentWins = 0;
+  for (const trade of trades) {
+    if (trade.exitType === 'SL') {
+      maxWins = Math.max(maxWins, currentWins);
+      currentWins = 0;
+    } else {
+      currentWins++;
+    }
+  }
+  return Math.max(maxWins, currentWins);
+}

@@ -30,8 +30,30 @@ const scanStockSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Next-session watchlist candidate (EOD prep scan only): gate-qualified shortlist with
+// the analysis-suggested levels to confirm live at the next open. NOT a tradeable signal.
+const watchCandidateSchema = new mongoose.Schema(
+  {
+    symbol: { type: String, required: true },
+    currentPrice: Number,
+    compositeScore: Number,
+    gatesPassed: Number,
+    scoreConfidence: String,
+    sector: String,
+    rsi: Number,
+    suggestedEntry: Number,
+    suggestedStopLoss: Number,
+    suggestedTarget1: Number,
+    suggestedTarget2: Number,
+    riskReward: Number,
+  },
+  { _id: false }
+);
+
 const scanResultSchema = new mongoose.Schema(
   {
+    // LIVE = intraday signal scan; EOD_PREP = post-close next-session watchlist build
+    scanType: { type: String, enum: ['LIVE', 'EOD_PREP'], default: 'LIVE', index: true },
     marketMode: { type: String, enum: Object.values(MARKET_MODES) },
     adRatio: Number,
     niftyPrice: Number,
@@ -50,6 +72,7 @@ const scanResultSchema = new mongoose.Schema(
     totalCostInr: Number,
     errors: Number,
     stocks: { type: [scanStockSchema], default: [] },
+    watchlist: { type: [watchCandidateSchema], default: [] }, // EOD_PREP only
   },
   { timestamps: true, strict: true }
 );

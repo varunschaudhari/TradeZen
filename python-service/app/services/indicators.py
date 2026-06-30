@@ -9,6 +9,7 @@ Last Modified: 2026-06-13
 """
 
 import logging
+from datetime import datetime, timedelta, time as dtime
 from typing import Optional
 
 import pandas as pd
@@ -49,6 +50,23 @@ def _safe_last(series: Optional[pd.Series], decimals: int = 4) -> Optional[float
         return round(float(val), decimals)
     except (IndexError, ValueError, TypeError):
         return None
+
+
+def _is_partial_last_bar(df: pd.DataFrame) -> bool:
+    """
+    True when the latest daily bar is the current IST trading day BEFORE the 15:30 close —
+    i.e. an in-progress bar whose VOLUME is still accumulating. Price/RSI/MACD on that bar
+    are the live snapshot we want, but volume is incomplete, so the volume ratio should be
+    read from the last COMPLETED bar instead. Weekends/holidays/after-close return False
+    (the last bar is already complete).
+    """
+    try:
+        last_ts = df.index[-1]
+        last_date = last_ts.date() if hasattr(last_ts, "date") else last_ts
+        ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+        return last_date == ist_now.date() and ist_now.time() < dtime(15, 30)
+    except Exception:
+        return False
 
 
 def _ema(series: pd.Series, period: int) -> pd.Series:
@@ -312,9 +330,18 @@ def compute_indicators(df: pd.DataFrame) -> Optional[IndicatorData]:
         # ── Bollinger Bands ───────────────────────────────────────────────────
         bb_upper, bb_lower, bb_pct_b = _bollinger_bands(close, BB_PERIOD, BB_STD)
 
-        # ── Volume ratio ──────────────────────────────────────────────────────
+        # ── Volume ratio (from the last COMPLETED bar) ────────────────────────
+        # During market hours the latest daily bar is a partial day whose volume is still
+        # accumulating; reading the ratio there understates participation (and corrupts
+        # Gate 5 + the volume-anomaly signal). Use the prior completed bar when the last
+        # bar is intraday-partial.
         vol_avg = volume.rolling(VOLUME_AVG_PERIOD).mean()
         vol_ratio = volume / vol_avg
+        vol_ratio_clean = vol_ratio.dropna()
+        if _is_partial_last_bar(df) and len(vol_ratio_clean) >= 2:
+            vol_ratio_value = round(float(vol_ratio_clean.iloc[-2]), 2)
+        else:
+            vol_ratio_value = _safe_last(vol_ratio, decimals=2)
 
         # ── Candle pattern ────────────────────────────────────────────────────
         candle_pattern = _detect_candle_pattern(df)
@@ -331,7 +358,7 @@ def compute_indicators(df: pd.DataFrame) -> Optional[IndicatorData]:
             bbLower=_safe_last(bb_lower),
             bbPctB=_safe_last(bb_pct_b),
             atr14=_safe_last(atr),
-            volRatio=_safe_last(vol_ratio, decimals=2),
+            volRatio=vol_ratio_value,
             candlePattern=candle_pattern,
         )
 

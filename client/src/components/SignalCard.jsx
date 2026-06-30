@@ -7,6 +7,7 @@
  */
 
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import PropTypes from 'prop-types';
 import { formatCurrency, formatPercent, timeAgo } from '../utils/formatters.js';
 import { GATE_NAMES, GATE_DESCRIPTIONS } from '../utils/constants.js';
@@ -88,6 +89,11 @@ const SignalCard = ({ signal, quote, onPreview }) => {
           )}
         </div>
         <div className="flex items-center gap-1.5">
+          {signal.simonsScore != null && (
+            <span className="chip bg-accent/10 text-accent text-xs" title={`Simons composite: ${Math.round(signal.simonsScore)}`}>
+              S {Math.round(signal.simonsScore)}
+            </span>
+          )}
           {onPreview && (
             <button
               onClick={(e) => { e.stopPropagation(); onPreview(signal.symbol); }}
@@ -132,6 +138,13 @@ const SignalCard = ({ signal, quote, onPreview }) => {
         </p>
       )}
 
+      {/* Simons override reason (if applicable) */}
+      {signal.simonOverride && (
+        <p className="text-xs text-accent mb-2 pl-1.5 italic">
+          ✨ {signal.simonOverride.reason}
+        </p>
+      )}
+
       {/* Reasoning snippet */}
       {signal.reasoning && (
         <p className="text-xs text-slate-400 mb-3 pl-1.5 line-clamp-2 italic">&ldquo;{signal.reasoning}&rdquo;</p>
@@ -171,13 +184,25 @@ const SignalCard = ({ signal, quote, onPreview }) => {
       </div>
 
       {/* Footer */}
-      <div className="mt-3 pt-2 pl-1.5 border-t border-slate-700/60 flex items-center justify-between text-xs">
-        {signal.confidence ? (
-          <span className={`chip ${CONFIDENCE_STYLES[signal.confidence] ?? 'text-slate-500'}`}>
-            {signal.confidence} confidence
-          </span>
-        ) : <span />}
-        <span className="text-slate-500">{timeAgo(signal.createdAt)}</span>
+      <div className="mt-3 pt-2 pl-1.5 border-t border-slate-700/60 flex items-center justify-between text-xs gap-2">
+        <div className="flex items-center gap-2">
+          {signal.confidence ? (
+            <span
+              className={`chip cursor-help ${CONFIDENCE_STYLES[signal.confidence] ?? 'text-slate-500'}`}
+              title="Model-assigned confidence — NOT yet validated against real outcomes. Treat it as a hypothesis, not a guarantee (paper mode)."
+            >
+              {signal.confidence} confidence*
+            </span>
+          ) : <span />}
+          <span className="text-slate-500">{timeAgo(signal.createdAt)}</span>
+        </div>
+        <Link
+          to={`/analysis/${signal.symbol}`}
+          className="ml-auto px-2 py-1 rounded text-xs bg-surface-elevated hover:bg-accent/20 text-accent hover:text-accent transition-colors font-medium"
+          title="View comprehensive analysis report"
+        >
+          📊 Analyze
+        </Link>
       </div>
     </div>
   );

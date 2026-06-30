@@ -24,6 +24,7 @@ import {
   MAX_CANDIDATES_TO_ANALYZE,
   MAX_CLAUDE_CALLS_PER_SCAN,
   SCREEN_TIERS,
+  SIMONS_OVERRIDE_THRESHOLD,
 } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 import {
@@ -99,17 +100,40 @@ export async function enrichAndGate(stockData, marketData, niftyCloses) {
 
 /**
  * Stage 7 selection: keep stocks that pass ≥ GATES_REQUIRED_FOR_CLAUDE without a hard
- * block, rank by composite score, and cap to `claudeCap` (the stage-8 budget).
+ * block. Additionally, if Simons score ≥ SIMONS_OVERRIDE_THRESHOLD, also accept stocks
+ * with gatesPassed ≥ 4 (soft-gate failures only). Rank by composite score and cap.
  *
  * @param {object[]} gated - Output of enrichAndGate per candidate
  * @param {number} claudeCap - Max candidates to forward to Claude
- * @returns {object[]} Ranked, capped candidate list
+ * @returns {object[]} Ranked, capped candidate list with optional simonOverride flag
  */
 export function selectTopCandidates(gated, claudeCap) {
-  return gated
-    .filter(
-      (c) => c.gateResult.gatesPassed >= GATES_REQUIRED_FOR_CLAUDE && !c.gateResult.hardBlockFired
-    )
+  const qualified = gated.filter((c) => {
+    const { gatesPassed, hardBlockFired } = c.gateResult;
+    const simonsScore = c.simons?.score ?? 0;
+
+    // Normal path: 5+ gates and no hard blocks
+    if (gatesPassed >= GATES_REQUIRED_FOR_CLAUDE && !hardBlockFired) {
+      return true;
+    }
+
+    // Simons override: 4+ gates, no hard blocks, Simons ≥ 80
+    if (
+      gatesPassed >= 4 &&
+      !hardBlockFired &&
+      simonsScore >= SIMONS_OVERRIDE_THRESHOLD
+    ) {
+      c.simonOverride = {
+        reason: `Soft gates failed but Simons score ${Math.round(simonsScore)} ≥ ${SIMONS_OVERRIDE_THRESHOLD}, proceeding to Claude`,
+        score: simonsScore,
+      };
+      return true;
+    }
+
+    return false;
+  });
+
+  return qualified
     .sort((a, b) => b.gateResult.compositeScore - a.gateResult.compositeScore)
     .slice(0, claudeCap);
 }
@@ -138,10 +162,14 @@ export const runStockDiscovery = async (opts = {}) => {
     maxAnalyze = MAX_CANDIDATES_TO_ANALYZE,
     claudeCap = MAX_CLAUDE_CALLS_PER_SCAN,
   } = opts;
+  // Optional progress hooks (no-ops if absent) so callers like runFullScan can drive a
+  // live progress bar: onProgress.phase(name, note), .begin(total, note), .tick(symbol).
+  const onProgress = opts.onProgress ?? {};
   const marketData = opts.marketData ?? (await fetchMarketData());
   const funnel = {};
 
   // Stages 1–6 (Python screen)
+  onProgress.phase?.('Screening the NSE universe…');
   const screen = await screenUniverse({ tiers, extraSymbols: watchlistSymbols });
   funnel.universe = screen.universeCount;
   funnel.screened = screen.candidateCount;
@@ -171,6 +199,7 @@ export const runStockDiscovery = async (opts = {}) => {
   }
 
   // Full analysis for survivors
+  onProgress.phase?.(`Fetching analysis for ${symbols.length} screened stocks…`);
   const analysis = await analyzeStocks(symbols, capital, riskPct);
   const valid = (analysis.results ?? []).filter((r) => !r.error);
   funnel.analyzed = valid.length;
@@ -178,10 +207,14 @@ export const runStockDiscovery = async (opts = {}) => {
   // Nifty closes power the relative-strength signal — fetch once, share across candidates
   const closes = niftyCloses ?? (await fetchNiftyHistory());
 
-  // Enrich (news + Simons) and run Stage 7 gates with bounded concurrency
-  const gated = await mapWithConcurrency(valid, DISCOVERY_CONCURRENCY, (stock) =>
-    enrichAndGate(stock, marketData, closes)
-  );
+  // Enrich (news + Simons) and run Stage 7 gates with bounded concurrency. Tick per stock
+  // so callers can render "scoring 12/45 · TCS" progress through the heaviest phase.
+  onProgress.begin?.(valid.length, `Scoring ${valid.length} stocks through the 8 gates…`);
+  const gated = await mapWithConcurrency(valid, DISCOVERY_CONCURRENCY, async (stock) => {
+    const result = await enrichAndGate(stock, marketData, closes);
+    onProgress.tick?.(stock.symbol);
+    return result;
+  });
   funnel.gatePassed = gated.filter(
     (c) => c.gateResult.gatesPassed >= GATES_REQUIRED_FOR_CLAUDE && !c.gateResult.hardBlockFired
   ).length;

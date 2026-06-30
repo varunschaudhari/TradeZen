@@ -22,6 +22,7 @@ const updateSchema = Joi.object({
   emailRecipient: Joi.string().email({ tlds: { allow: false } }).allow('').optional(),
   paperTradeMode: Joi.boolean().optional(),
   scannerEnabled: Joi.boolean().optional(),
+  autoPaperTrade: Joi.boolean().optional(),
   marketModeOverride: Joi.boolean().optional(),
 }).min(1);
 

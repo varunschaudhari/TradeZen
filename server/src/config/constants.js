@@ -37,17 +37,29 @@ export const NSE_HOLIDAYS = new Set([
 
 // Gate thresholds
 export const RSI_MIN = 40;
-export const RSI_MAX = 65;
-export const VOLUME_RATIO_MIN = 1.5;
+// 70 (was 65): 65–70 in a confirmed uptrend is strong momentum, not froth. RSI_MAX drives
+// the Gate-4 sweet spot, the +10 composite bonus, the 52w-high bonus, AND the overbought
+// penalty — so a momentum name at RSI 66 was triple-penalized. >70 still counts as overbought
+// (the backtest shows genuine overbought dilutes returns), so the froth guard is preserved.
+export const RSI_MAX = 70;
+// 1.0 (was 1.5): the backtest found volume confirmation has INVERTED edge (low-volume entries
+// outperformed — see COMPOSITE_POINTS note). Demanding a 1.5× spike suppressed ~89% of
+// candidates for no measured benefit. 1.0 keeps an "at least average participation" liquidity
+// floor (the screener already enforces turnover) without filtering out the better low-vol setups.
+export const VOLUME_RATIO_MIN = 1.0;
 export const RISK_REWARD_MIN = 2.0;
 export const EARNINGS_BUFFER_DAYS = 15;
 export const GATES_REQUIRED_FOR_CLAUDE = 5;
+export const SIMONS_OVERRIDE_THRESHOLD = 80; // Simons score ≥ 80 allows soft-gate override
 export const SL_WARNING_PCT = 2;
 
 // Capital protection rules (enforced in code)
-export const MAX_OPEN_TRADES = 3;
-export const MAX_CAPITAL_DEPLOYED_PCT = 60;
-export const DEFAULT_RISK_PCT = 1;
+// NOTE: raised to a 15-stock diversified book (was 3 positions / 60% cap / 1% risk).
+// Risk-per-trade dropped to 0.4% so 15 concurrent positions ≈ 6% total portfolio risk if
+// all stop out, and the 95% cap leaves room for ~12–15 modest positions.
+export const MAX_OPEN_TRADES = 15;
+export const MAX_CAPITAL_DEPLOYED_PCT = 95;
+export const DEFAULT_RISK_PCT = 0.4;
 export const DAILY_LOSS_PAUSE_PCT = 3;
 export const DEDUPLICATION_HOURS = 4;
 
@@ -107,7 +119,10 @@ export const NEGATIVE_NEWS_KEYWORDS = Object.freeze([
 
 // Composite score (Simons-style) — base + signal adjustments → confidence band
 export const COMPOSITE_BASE_SCORE = 40;
-export const SCORE_HIGH_CONFIDENCE = 70;
+// Calibrated to where measured edge concentrates (re-backtest 2026-06): the 60–69 bucket
+// carries +0.20–0.35R vs ~+0.06R base, so HIGH=60 (was 70, which was unreachable from
+// price signals alone — max ≈ 62 = base 40 + RSI-sweet 10 + RS-strong 8 + 52W 4).
+export const SCORE_HIGH_CONFIDENCE = 60;
 export const SCORE_MEDIUM_CONFIDENCE = 50;
 export const RS_LEADER = 1.2; // relative strength "strong leader" threshold
 export const PROXIMITY_52W_HIGH_PCT = 5; // within 5% of 52-week high
@@ -120,23 +135,34 @@ export const BULLISH_CANDLE_PATTERNS = Object.freeze([
   'STRONG_BULL',
   'MORNING_STAR',
 ]);
+// Calibrated to MEASURED per-signal edge (signal-edge backtest, 2y/40-symbol, n≥30).
+// Price-derived signals carry the weight here because they're the only ones that fire
+// historically; the external signals (FII/PEAD/promoter/sector/sentiment/PCR/candle/MACD)
+// remain scored so they contribute the day real data is wired — but the BUY threshold is
+// calibrated to what price signals alone can reach (see SCORE_HIGH_CONFIDENCE).
 export const COMPOSITE_POINTS = Object.freeze({
-  VOLUME_ANOMALY: 10,
-  RS_LEADER: 8,
+  // ── Measured price-signal edge (drive the score today) ──
+  RSI_SWEET_SPOT: 10, // +0.17R lift — strongest measured signal (was only a gate, unscored)
+  RS_STRONG_LEADER: 8, // +0.12R lift — TOP RS tier only (rs ≥ 1.3); plain leaders were dilutive
+  NEAR_52W_HIGH: 4, // only when paired with a healthy (non-overbought) RSI — raw proximity was dilutive
+  // ── External signals (fire only once their data feeds are wired) ──
   FII_BUYING: 8,
   PROMOTER_INCREASE: 7,
   PEAD: 7,
   TOP_SECTOR: 6,
   STRONG_SENTIMENT: 5,
   PC_FEAR: 5,
-  NEAR_52W_HIGH: 4,
   BULLISH_CANDLE: 3,
   MACD_RISING: 2,
+  // ── Penalties (measured-dilutive conditions) ──
+  RSI_OVERBOUGHT: -8, // −0.17R lift — buying overbought hurt
+  BB_OVERBOUGHT: -8, // −0.20R lift — the most dilutive condition (was −3)
   FII_SELLING: -10,
   PROMOTER_DECREASE: -8,
   BOTTOM_SECTOR: -6,
   NIFTY_DOWN_STREAK: -5,
-  BB_OVERBOUGHT: -3,
+  // NOTE: VOLUME_ANOMALY reward removed — measured edge was INVERTED (low-volume entries
+  // outperformed). Volume still gates entry (Gate 5); it just no longer boosts the score.
 });
 
 // Simons signal thresholds (Flow 5 — simonsSignals.js)
@@ -216,6 +242,9 @@ export const SCREEN_ENABLED = (process.env.SCREEN_ENABLED ?? 'true') !== 'false'
 export const SCREEN_TIERS = null;
 export const MAX_CANDIDATES_TO_ANALYZE = 45; // cap survivors sent to the heavy pipeline
 
+// EOD prep scan (post-close next-session watchlist build — no Claude, no signals)
+export const EOD_PREP_MAX_CANDIDATES = 12; // top gate-qualified candidates kept for the watchlist
+
 // Stock discovery (Flow 2 — stockDiscovery.js)
 export const MAX_CLAUDE_CALLS_PER_SCAN = 15; // stage-8 cap: candidates sent to Claude
 export const DISCOVERY_CONCURRENCY = 6; // parallel per-candidate enrich+gate workers
@@ -245,9 +274,20 @@ export const BACKTEST_HOLD_MIN_DAYS = 3; // never time-stop sooner than this
 export const BACKTEST_HOLD_MAX_DAYS = 30; // never hold a swing longer than this
 export const BACKTEST_HOLD_BUFFER = 1.4; // linear-mode choppiness buffer (1.3–1.5×)
 
+// Transaction-cost model (NSE delivery). costInR = round-trip% ÷ (risk as % of price), so
+// tighter stops correctly cost more per trade. Slippage is ATR-scaled — volatility is the
+// liquidity proxy, so higher-ATR (mid/small-cap) names are charged more without a tier lookup.
+export const BACKTEST_COST_STATUTORY_PCT = 0.12; // STT+exchange+stamp+GST, per side, % of notional
+export const BACKTEST_SLIPPAGE_ATR_MULT = 0.05; // slippage per side = this × ATR%
+export const BACKTEST_SLIPPAGE_MIN_PCT = 0.03; // per-side slippage floor (%)
+export const BACKTEST_SLIPPAGE_MAX_PCT = 0.4; // per-side slippage cap (%)
+
 // Trade tracking (Flow 9 — tradeTracker.js)
 export const EARNINGS_EXIT_REMINDER_DAYS = 5; // remind to exit N days before earnings
 export const SL_WARNING_THROTTLE_MS = 60 * 60 * 1000; // at most one SL warning per hour
+// Auto paper trades close at the current price after this many calendar days if neither
+// target nor stop was hit (~15 trading days), so the paper record resolves for calibration.
+export const MAX_PAPER_HOLD_DAYS = 21;
 
 // Performance engine (Flow 10 — performanceEngine.js)
 export const DEFAULT_CAPITAL = 1_000_000; // ₹10 lakh baseline

@@ -40,9 +40,9 @@ const marketHealthSnapshotSchema = new mongoose.Schema(
 const configSchema = new mongoose.Schema(
   {
     capital: { type: Number, required: true, default: 1000000 },
-    riskPercentage: { type: Number, default: 1, min: 0.1, max: 5 },
-    maxOpenTrades: { type: Number, default: 3, min: 1, max: 10 },
-    maxCapitalDeployedPct: { type: Number, default: 60, min: 10, max: 90 },
+    riskPercentage: { type: Number, default: 0.4, min: 0.1, max: 5 },
+    maxOpenTrades: { type: Number, default: 15, min: 1, max: 20 },
+    maxCapitalDeployedPct: { type: Number, default: 95, min: 10, max: 100 },
     watchlist: [watchlistItemSchema],
     telegramChatId: String,
     emailRecipient: String,
@@ -54,6 +54,9 @@ const configSchema = new mongoose.Schema(
     marketModeOverride: { type: Boolean, default: false },
     paperTradeMode: { type: Boolean, default: true },
     scannerEnabled: { type: Boolean, default: true },
+    // Opt-in: auto-log a PAPER trade for every BUY signal (paper mode only — never a real
+    // order). Off by default so it's enabled deliberately. Builds a forward track record.
+    autoPaperTrade: { type: Boolean, default: false },
     lastMarketHealth: { type: marketHealthSnapshotSchema, default: null },
   },
   { timestamps: true, strict: true }

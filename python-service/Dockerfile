@@ -15,4 +15,6 @@ EXPOSE 8001
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD curl -f http://localhost:8001/health || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+# Multiple workers so a heavy /analyze (45-symbol scan) doesn't starve /health, /quotes,
+# and the position monitor — a single worker serializes all requests and times them out.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "4"]

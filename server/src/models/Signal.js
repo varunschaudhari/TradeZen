@@ -76,6 +76,13 @@ const signalSchema = new mongoose.Schema(
     keyRisks: [String],
     tailwindFactors: [String],
     simonsSignals: [String],
+    simonsScore: { type: Number, default: null },
+    simonsBreakdown: [{ label: String, points: Number, _id: false }],
+    simonOverride: {
+      reason: String,
+      score: Number,
+      _id: false,
+    },
     tags: [String],
     gatesPassed: { type: Number, default: 0 },
     gateDetails: {

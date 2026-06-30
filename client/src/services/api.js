@@ -8,8 +8,11 @@
 
 import axios from 'axios';
 
+// Default to SAME-ORIGIN (relative '/api') so one reverse proxy / tunnel serves the whole
+// app; nginx (and the Vite dev proxy) forward /api to the server. Set VITE_API_URL only if
+// the API is hosted on a separate domain.
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL ?? 'http://localhost:5000',
+  baseURL: import.meta.env.VITE_API_URL || '',
   timeout: 30000,
   headers: { 'Content-Type': 'application/json' },
 });
@@ -33,6 +36,8 @@ export const signalsApi = {
 export const tradesApi = {
   getAll: () => api.get('/api/trades'),
   getOpen: () => api.get('/api/trades/open'),
+  getLive: () => api.get('/api/trades/live'),
+  refresh: () => api.post('/api/trades/refresh'),
   create: (data) => api.post('/api/trades', data),
   update: (id, data) => api.patch(`/api/trades/${id}`, data),
   markT1Hit: (id) => api.patch(`/api/trades/${id}/target1`),
@@ -71,6 +76,18 @@ export const universeApi = {
 export const scanApi = {
   getLatest: () => api.get('/api/scan/latest'),
   getHistory: () => api.get('/api/scan/history'),
+  getPrep: () => api.get('/api/scan/prep'),
+};
+
+export const monitorApi = {
+  getOverview: () => api.get('/api/monitor/overview'),
+  getInventory: () => api.get('/api/monitor/inventory'),
+  getCatalog: () => api.get('/api/monitor/catalog'),
+  getProgress: () => api.get('/api/monitor/progress'),
+  getEvents: () => api.get('/api/monitor/events'),
+  getCalibration: () => api.get('/api/monitor/calibration', { timeout: 300000 }),
+  triggerScan: () => api.post('/api/monitor/scan'),
+  setScanner: (enabled) => api.patch('/api/monitor/scanner', { enabled }),
 };
 
 export const newsApi = {
@@ -93,6 +110,13 @@ export const ohlcvApi = {
 
 export const pricesApi = {
   update: (prices) => api.post('/api/prices/update', { prices }),
+};
+
+export const analysisApi = {
+  // The 23-section report is compute-heavy (backtest, Monte Carlo, liquidity, several
+  // Python data fetches) — the first call for a symbol is the slowest (cold OHLCV cache).
+  // Override the 30s global default with a 120s leash so it never times out client-side.
+  getReport: (symbol) => api.get(`/api/analysis/${symbol}`, { timeout: 120000 }),
 };
 
 export default api;

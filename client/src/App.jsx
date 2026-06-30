@@ -12,8 +12,11 @@ import { AppProvider } from './context/AppContext.jsx';
 import Layout from './components/Layout.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import StockDetail from './pages/StockDetail.jsx';
+import AnalysisReport from './pages/AnalysisReport.jsx';
 import Signals from './pages/Signals.jsx';
 import ScanResults from './pages/ScanResults.jsx';
+import Monitor from './pages/Monitor.jsx';
+import Stocks from './pages/Stocks.jsx';
 import Positions from './pages/Positions.jsx';
 import Performance from './pages/Performance.jsx';
 import Watchlist from './pages/Watchlist.jsx';
@@ -27,8 +30,11 @@ const App = () => (
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/stock/:symbol" element={<StockDetail />} />
+          <Route path="/analysis/:symbol" element={<AnalysisReport />} />
           <Route path="/signals" element={<Signals />} />
           <Route path="/scan" element={<ScanResults />} />
+          <Route path="/stocks" element={<Stocks />} />
+          <Route path="/monitor" element={<Monitor />} />
           <Route path="/positions" element={<Positions />} />
           <Route path="/performance" element={<Performance />} />
           <Route path="/watchlist" element={<Watchlist />} />

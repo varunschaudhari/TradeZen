@@ -545,6 +545,139 @@ export const sendEveningSummary = async (data) => {
   logger.info('Evening summary sent');
 };
 
+// ── 9b. Next-session watchlist (EOD prep) ──────────────────────────────────────
+/**
+ * Send the post-close watchlist of next-session candidates. These are gate-qualified
+ * setups to CONFIRM live at the next open — not tradeable BUY signals (no overnight action).
+ *
+ * @param {object} data - { dateStr, marketMode, candidates: [{ symbol, compositeScore,
+ *   gatesPassed, suggestedEntry, suggestedStopLoss, suggestedTarget1, rsi }] }
+ * @returns {Promise<void>}
+ */
+export const sendWatchlistPrep = async (data) => {
+  const list = data?.candidates ?? [];
+  if (!list.length) {
+    logger.info('Watchlist prep: no candidates — alert skipped');
+    return;
+  }
+  const dateStr = data.dateStr ?? new Date().toLocaleDateString('en-IN');
+
+  const lines = list
+    .slice(0, 10)
+    .map(
+      (c, i) =>
+        `${i + 1}. *${c.symbol}* — score ${Math.round(c.compositeScore ?? 0)} · ${c.gatesPassed ?? 0}/8 gates` +
+        (c.suggestedEntry ? `\n   entry ~${fmtINR(c.suggestedEntry)} · SL ${fmtINR(c.suggestedStopLoss)} · T1 ${fmtINR(c.suggestedTarget1)}` : '')
+    );
+
+  const tg = [
+    `🔭 *NEXT-SESSION WATCHLIST — ${dateStr}*`,
+    data.marketMode ? `Market mode: ${data.marketMode}` : '',
+    `${list.length} candidate${list.length === 1 ? '' : 's'} cleared the gates on today's close.`,
+    '',
+    ...lines,
+    '',
+    `_Confirm live at the open — these are watch candidates, not signals._`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const rows = list
+    .slice(0, 10)
+    .map(
+      (c) =>
+        row(
+          `<b>${c.symbol}</b>`,
+          `score ${Math.round(c.compositeScore ?? 0)} · ${c.gatesPassed ?? 0}/8` +
+            (c.suggestedEntry
+              ? ` · entry ${fmtINR(c.suggestedEntry)} / SL ${fmtINR(c.suggestedStopLoss)} / T1 ${fmtINR(c.suggestedTarget1)}`
+              : '')
+        )
+    )
+    .join('');
+
+  await Promise.all([
+    sendTelegram(tg),
+    sendEmail({
+      subject: `🔭 Next-session watchlist (${list.length}) — ${dateStr}`,
+      html: htmlWrap(
+        '🔭 Next-Session Watchlist',
+        `<p>${list.length} candidates cleared the gates on today's close. Confirm live at the open.</p>
+         <table>${rows}</table>`
+      ),
+    }),
+  ]);
+  logger.info('Watchlist prep alert sent', { candidates: list.length });
+};
+
+// ── 9c. Weekly calibration / decision-quality review ───────────────────────────
+/**
+ * Send the weekly calibration review — the continuous-improvement feedback nudge.
+ * Summarises whether confidence is meaningful (hit rate by tier, market-adjusted),
+ * go-live readiness, and any signal decay. Honest by design: reports "insufficient
+ * data" when the sample is too thin to judge.
+ *
+ * @param {object} report - getDecisionQualityReport() output
+ * @returns {Promise<void>}
+ */
+export const sendDecisionQualityReport = async (report) => {
+  if (!report) return;
+  const sc = report.signalCalibration ?? {};
+  const tb = report.tradeBased ?? {};
+  const conf = sc.byConfidence ?? {};
+  const confLine = (k) => {
+    const g = conf[k];
+    if (!g || g.n === 0) return '—';
+    const decided = g.win + g.loss;
+    return g.hitRate != null
+      ? `${g.hitRate}% (${decided} resolved${g.enough ? '' : ', low-n'})`
+      : `— (0 resolved of ${g.n})`;
+  };
+  const decay = tb.decayFlags ?? [];
+
+  const tg = [
+    `📐 *WEEKLY CALIBRATION REVIEW*`,
+    '',
+    `_${report.verdict?.message ?? 'No verdict.'}_`,
+    '',
+    `*Hit rate by confidence* (market-adjusted):`,
+    `  HIGH:   ${confLine('HIGH')}`,
+    `  MEDIUM: ${confLine('MEDIUM')}`,
+    `  LOW:    ${confLine('LOW')}`,
+    '',
+    `Signals: ${sc.signalsConsidered ?? 0} (resolved ${sc.resolved ?? 0}, open ${sc.open ?? 0})`,
+    `Paper trades: ${tb.closedTrades ?? 0} · go-live: ${tb.goLive?.ready ? '✅ READY' : '⏳ not ready'}`,
+    decay.length ? `⚠️ Decay: ${decay.map((f) => `${f.key} ${f.winRate}%`).join(', ')}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  await Promise.all([
+    sendTelegram(tg),
+    sendEmail({
+      subject: '📐 Weekly Calibration Review',
+      html: htmlWrap(
+        '📐 Weekly Calibration Review',
+        `<p><i>${report.verdict?.message ?? 'No verdict.'}</i></p>
+         <table>
+           ${row('HIGH confidence', confLine('HIGH'))}
+           ${row('MEDIUM confidence', confLine('MEDIUM'))}
+           ${row('LOW confidence', confLine('LOW'))}
+           ${row('Signals (resolved/open)', `${sc.resolved ?? 0} / ${sc.open ?? 0} of ${sc.signalsConsidered ?? 0}`)}
+           ${row('Paper trades', tb.closedTrades ?? 0)}
+           ${row('Go-live', tb.goLive?.ready ? 'READY' : 'not ready')}
+           ${decay.length ? row('Decay flags', decay.map((f) => `${f.key} ${f.winRate}%`).join(', ')) : ''}
+         </table>
+         <p style="color:#94a3b8;font-size:12px">Hit rates are market-adjusted (excess over Nifty). Trade-based metrics take over as the paper-trade record grows.</p>`
+      ),
+    }),
+  ]);
+  logger.info('Decision-quality report sent', {
+    resolved: sc.resolved,
+    calibrated: report.verdict?.calibrated,
+  });
+};
+
 // ── Utility exports ───────────────────────────────────────────────────────────
 
 /**

@@ -1,8 +1,9 @@
 /**
  * @file performance.js
  * @description REST routes for performance statistics
- *   GET /api/performance         — aggregate summary (win rate, P&L, drawdown, Claude cost)
- *   GET /api/performance/history — paginated monthly P&L + capital growth data
+ *   GET /api/performance                  — aggregate summary (win rate, P&L, drawdown, cost)
+ *   GET /api/performance/history          — paginated monthly P&L + capital growth data
+ *   GET /api/performance/decision-quality — calibration report (is confidence/score meaningful?)
  * @author SwingTrader AI Team
  */
 
@@ -11,8 +12,20 @@ import Trade from '../models/Trade.js';
 import Signal from '../models/Signal.js';
 import Config from '../models/Config.js';
 import { TRADE_STATUSES } from '../config/constants.js';
+import { getDecisionQualityReport } from '../services/decisionQuality.js';
 
 const router = express.Router();
+
+// GET /api/performance/decision-quality — calibration / decision-quality report.
+// Resolves stored signals against forward prices (slow — fetches OHLCV per symbol).
+router.get('/decision-quality', async (_req, res, next) => {
+  try {
+    const report = await getDecisionQualityReport();
+    res.json({ success: true, data: report, message: 'Decision-quality / calibration report' });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // GET /api/performance — must be before /history to avoid route shadowing
 router.get('/', async (_req, res, next) => {

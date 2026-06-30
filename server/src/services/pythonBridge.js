@@ -14,6 +14,7 @@
 import axios from 'axios';
 import { PYTHON_SERVICE_URL } from '../config/constants.js';
 import { logger } from '../config/logger.js';
+import { cachedFetch, HISTORY_CACHE_TTL_MS } from './historyCache.js';
 
 // ── Axios client ──────────────────────────────────────────────────────────────
 
@@ -228,17 +229,23 @@ export const fetchNiftyHistory = async (period = '1y') => {
  * @param {string} [period='2y'] - yfinance period
  * @returns {Promise<{ dates: string[], closes: number[] }>} empty arrays on failure
  */
-export const fetchNiftySeries = async (period = '2y') => {
-  try {
-    const response = await withRetry(() =>
-      pythonClient.get('/nifty-history', { params: { period }, timeout: 60_000 })
-    );
-    return { dates: response.data?.dates ?? [], closes: response.data?.closes ?? [] };
-  } catch (err) {
-    logger.warn('Python /nifty-history (series) failed', { error: axiosErrMsg(err) });
-    return { dates: [], closes: [] };
-  }
-};
+export const fetchNiftySeries = async (period = '2y') =>
+  cachedFetch(
+    `nifty:${period}`,
+    HISTORY_CACHE_TTL_MS,
+    async () => {
+      try {
+        const response = await withRetry(() =>
+          pythonClient.get('/nifty-history', { params: { period }, timeout: 60_000 })
+        );
+        return { dates: response.data?.dates ?? [], closes: response.data?.closes ?? [] };
+      } catch (err) {
+        logger.warn('Python /nifty-history (series) failed', { error: axiosErrMsg(err) });
+        return { dates: [], closes: [] };
+      }
+    },
+    (p) => p && Array.isArray(p.closes) && p.closes.length > 0
+  );
 
 /**
  * GET /universe — the full static NSE universe symbol list (for full-universe backtests).
@@ -262,17 +269,23 @@ export const fetchUniverse = async () => {
  * @param {string} [period='2y'] - yfinance period
  * @returns {Promise<{ symbol: string, bars: number, series: object }|null>} null on failure
  */
-export const fetchIndicatorSeries = async (symbol, period = '2y') => {
-  try {
-    const response = await withRetry(() =>
-      pythonClient.get(`/indicator-series/${symbol}`, { params: { period }, timeout: 120_000 })
-    );
-    return response.data;
-  } catch (err) {
-    logger.error('Python /indicator-series failed', { symbol, error: axiosErrMsg(err) });
-    return null;
-  }
-};
+export const fetchIndicatorSeries = async (symbol, period = '2y') =>
+  cachedFetch(
+    `indseries:${symbol}:${period}`,
+    HISTORY_CACHE_TTL_MS,
+    async () => {
+      try {
+        const response = await withRetry(() =>
+          pythonClient.get(`/indicator-series/${symbol}`, { params: { period }, timeout: 120_000 })
+        );
+        return response.data;
+      } catch (err) {
+        logger.error('Python /indicator-series failed', { symbol, error: axiosErrMsg(err) });
+        return null;
+      }
+    },
+    (p) => !!(p && p.series)
+  );
 
 /**
  * GET /quotes — batch live price snapshot for a list of NSE symbols.
@@ -323,14 +336,26 @@ export const fetchStockDetail = async (symbol) => {
  * @returns {Promise<{ symbol: string, interval: string, data: Array<{ time: number, open: number, high: number, low: number, close: number, volume: number }> }>}
  */
 export const fetchOhlcv = async (symbol, period = '60d', interval = '15m') => {
-  try {
-    const response = await withRetry(() =>
-      pythonClient.get(`/ohlcv/${symbol}`, { params: { period, interval } })
+  const fetcher = async () => {
+    try {
+      const response = await withRetry(() =>
+        pythonClient.get(`/ohlcv/${symbol}`, { params: { period, interval } })
+      );
+      return response.data;
+    } catch (err) {
+      const msg = axiosErrMsg(err);
+      logger.error('Python /ohlcv failed', { symbol, period, interval, error: msg });
+      throw new Error(`OHLCV unavailable for ${symbol}: ${msg}`);
+    }
+  };
+  // Only daily bars are cache-safe — intraday charts (15m, etc.) must stay live.
+  if (interval === '1d') {
+    return cachedFetch(
+      `ohlcv:${symbol}:${period}:1d`,
+      HISTORY_CACHE_TTL_MS,
+      fetcher,
+      (p) => !!(p && Array.isArray(p.data) && p.data.length > 0)
     );
-    return response.data;
-  } catch (err) {
-    const msg = axiosErrMsg(err);
-    logger.error('Python /ohlcv failed', { symbol, period, interval, error: msg });
-    throw new Error(`OHLCV unavailable for ${symbol}: ${msg}`);
   }
+  return fetcher();
 };

@@ -12,16 +12,23 @@
 
 import cron from 'node-cron';
 import { logger } from '../config/logger.js';
-import { runFullScan } from './scanPipeline.js';
+import { runFullScan, runEodPrep, isMarketOpen } from './scanPipeline.js';
+import { refreshOpenPositions } from '../services/positionTracker.js';
 import { runStockDiscovery } from '../services/stockDiscovery.js';
 import { expireStaleSignals } from '../services/signalManager.js';
 import { updatePerformance, reviewSignalDecay } from '../services/performanceEngine.js';
+import { getDecisionQualityReport } from '../services/decisionQuality.js';
 import {
   generateMorningBrief,
   generateEveningSummary,
   generateWeeklyReport,
 } from '../services/reportGenerator.js';
-import { sendMorningBrief, sendEveningSummary, sendWeeklyReport } from '../services/notifier.js';
+import {
+  sendMorningBrief,
+  sendEveningSummary,
+  sendWeeklyReport,
+  sendDecisionQualityReport,
+} from '../services/notifier.js';
 
 /**
  * Wrap a cron handler so a failure is logged, never crashing the scheduler.
@@ -51,6 +58,18 @@ export const startScheduler = () => {
   cron.schedule(
     `*/${interval} * * * *`,
     job('main-scan', () => runFullScan())
+  );
+
+  // JOB 12 — Live open-position monitor (every 2 min, market hours only). Lighter than
+  // the main scan: pulls /quotes for open-trade symbols and runs the SL/T1/T2 monitor so
+  // exits + alerts fire near-real-time instead of waiting for the 15-min scan.
+  cron.schedule(
+    '*/2 * * * *',
+    job('position-monitor', async () => {
+      if (!isMarketOpen()) return;
+      const summary = await refreshOpenPositions();
+      if (summary.checked) logger.info('Position monitor cycle', summary);
+    })
   );
 
   // JOB 2 — Morning brief (8:30 AM IST = 3:00 UTC, Mon–Fri)
@@ -111,6 +130,17 @@ export const startScheduler = () => {
     })
   );
 
+  // JOB 11 — EOD prep: next-session watchlist from today's close (4:15 PM IST = 10:45 UTC, Mon–Fri)
+  // Runs after the 15:30 close + the 16:00 evening summary. Builds tomorrow's shortlist —
+  // no Claude, no tradeable signals (the market-hours guard is bypassed inside runEodPrep).
+  cron.schedule(
+    '45 10 * * 1-5',
+    job('eod-prep', async () => {
+      const { candidates } = await runEodPrep();
+      logger.info('EOD prep job done', { candidates });
+    })
+  );
+
   // JOB 9 — Signal expiry cleanup (9:00 AM IST ≈ 3:32 UTC, daily)
   cron.schedule(
     '32 3 * * *',
@@ -128,8 +158,12 @@ export const startScheduler = () => {
       await updatePerformance();
       const flags = await reviewSignalDecay();
       if (flags.length) logger.warn('Signal decay detected', { flags });
+      // Weekly calibration review — the continuous-improvement feedback nudge.
+      await sendDecisionQualityReport(await getDecisionQualityReport()).catch((e) =>
+        logger.error('weekly calibration review failed', { error: e.message })
+      );
     })
   );
 
-  logger.info('Scheduler registered: 10 cron jobs (main scan every ' + interval + ' min)');
+  logger.info('Scheduler registered: 12 cron jobs (main scan every ' + interval + ' min, position monitor every 2 min)');
 };

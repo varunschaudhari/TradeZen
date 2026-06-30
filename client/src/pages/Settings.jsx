@@ -125,6 +125,29 @@ const Settings = () => {
             className="bg-surface-elevated border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-full focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
         </div>
+
+        {/* Auto paper-trade opt-in */}
+        <div className="flex items-start justify-between gap-3 pt-2 border-t border-slate-700/60">
+          <div>
+            <label className="text-sm text-slate-200">Auto paper-trade BUY signals</label>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              Opens a <span className="text-slate-300">paper</span> position for every BUY (never a real
+              order) so signals build a forward track record for calibration. Respects the max-positions
+              and 60% capital caps, and exits via SL/T1/T2 or a {`${21}`}-day max hold.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => update('autoPaperTrade', !config.autoPaperTrade)}
+            aria-pressed={!!config.autoPaperTrade}
+            className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${config.autoPaperTrade ? 'bg-bull' : 'bg-slate-600'}`}
+            title="Auto-open paper trades from BUY signals"
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${config.autoPaperTrade ? 'translate-x-5' : ''}`}
+            />
+          </button>
+        </div>
       </div>
 
       {/* Notifications */}

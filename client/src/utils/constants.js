@@ -74,6 +74,8 @@ export const SOCKET_EVENTS = Object.freeze({
   MARKET_BEARMODE: 'market:bearmode',
   MARKET_VIXSPIKE: 'market:vixspike',
   SCAN_COMPLETE: 'scan:complete',
+  SCAN_PROGRESS: 'scan:progress',
+  MONITOR_EVENT: 'monitor:event',
 });
 
 export const EXIT_REASONS = Object.freeze({

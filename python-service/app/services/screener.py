@@ -179,7 +179,8 @@ def _failing_filter(metrics: dict, tier: str, tiers: tuple[str, ...]) -> Optiona
         return "liquidity"
     if tier != WATCHLIST_TIER and tier not in tiers:
         return "market_cap"
-    if not (metrics["currentPrice"] > metrics["ema50"] > metrics["ema200"]):
+    # Relaxed trend: allow if price above EMA50 OR EMA50 above EMA200 (not strict stacked)
+    if not (metrics["currentPrice"] > metrics["ema50"] or metrics["ema50"] > metrics["ema200"]):
         return "trend"
     rsi_ok = SCREEN_RSI_MIN <= metrics["rsi14"] <= SCREEN_RSI_MAX
     if not (rsi_ok and metrics["rocPct"] >= MIN_ROC_PCT):

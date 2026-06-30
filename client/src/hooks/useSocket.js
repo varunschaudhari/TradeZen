@@ -11,13 +11,16 @@ import { useEffect, useCallback } from 'react';
 import { io } from 'socket.io-client';
 import { useApp } from '../context/AppContext.jsx';
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? 'http://localhost:5000';
+// Empty → connect to the SAME origin serving the page (nginx / Vite proxy forwards
+// /socket.io to the server). Set VITE_SOCKET_URL only for a separate API domain.
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || '';
 
 // Module-level singleton — all callers share one connection
 let _socket = null;
 function getSocket() {
   if (!_socket) {
-    _socket = io(SOCKET_URL, { transports: ['websocket'], reconnectionAttempts: 10 });
+    // io(undefined) → same-origin; pass an explicit URL only when configured.
+    _socket = io(SOCKET_URL || undefined, { transports: ['websocket'], reconnectionAttempts: 10 });
   }
   return _socket;
 }
