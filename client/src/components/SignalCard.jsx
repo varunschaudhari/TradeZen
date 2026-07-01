@@ -1,12 +1,9 @@
 /**
  * @file SignalCard.jsx
  * @description Signal card showing verdict, indicators, gate count, and trade levels
- * @author SwingTrader AI Team
- * @created 2026-06-13
- * @lastModified 2026-06-23
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import PropTypes from 'prop-types';
 import { formatCurrency, formatPercent, timeAgo } from '../utils/formatters.js';
@@ -24,6 +21,20 @@ const CONFIDENCE_STYLES = {
   MEDIUM: 'bg-wait/15 text-wait',
   LOW:    'bg-slate-700/50 text-slate-400',
 };
+
+/* BUY signals expire at 15:30 IST = 10:00 UTC same IST calendar day */
+function computeExpiryMs(createdAt) {
+  const d    = new Date(createdAt);
+  const dIST = new Date(d.getTime() + 5.5 * 3600 * 1000); // shift to IST
+  return Date.UTC(dIST.getUTCFullYear(), dIST.getUTCMonth(), dIST.getUTCDate(), 10, 0, 0);
+}
+
+function formatCountdown(ms) {
+  if (ms <= 0) return 'Expired';
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
 
 const Level = ({ label, value, color = 'text-slate-100' }) => (
   <div className="flex flex-col">
@@ -47,19 +58,38 @@ const GateRow = ({ name, passed, reason, hint }) => (
 GateRow.propTypes = { name: PropTypes.string.isRequired, passed: PropTypes.bool.isRequired, reason: PropTypes.string, hint: PropTypes.string };
 GateRow.defaultProps = { reason: '' };
 
-const SignalCard = ({ signal, quote, onPreview }) => {
+const SignalCard = ({ signal, quote, onPreview, accuracy }) => {
   const [showGates, setShowGates] = useState(false);
-  const style = VERDICT_STYLES[signal.verdict] ?? VERDICT_STYLES.SKIP;
-  const isBuy = signal.verdict === 'BUY';
-  const isWait = signal.verdict === 'WAIT';
+  const style      = VERDICT_STYLES[signal.verdict] ?? VERDICT_STYLES.SKIP;
+  const isBuy      = signal.verdict === 'BUY';
+  const isWait     = signal.verdict === 'WAIT';
   const gatesPassed = signal.gatesPassed ?? 0;
-  const changeUp = (quote?.changePct ?? 0) >= 0;
-  const rsi = signal.indicators?.rsi;
-  const rsiChip =
+  const changeUp   = (quote?.changePct ?? 0) >= 0;
+  const rsi        = signal.indicators?.rsi;
+  const rsiChip    =
     rsi == null ? 'bg-surface-elevated/60 text-slate-400'
-    : rsi > 65 ? 'bg-bear/15 text-bear'
-    : rsi < 40 ? 'bg-wait/15 text-wait'
-    : 'bg-buy/15 text-buy'; // 40–65 sweet spot
+    : rsi > 65  ? 'bg-bear/15 text-bear'
+    : rsi < 40  ? 'bg-wait/15 text-wait'
+    : 'bg-buy/15 text-buy';
+
+  /* ── Expiry countdown (BUY only, updates every 60s) ─────────────── */
+  const expiryTs = isBuy && signal.createdAt ? computeExpiryMs(signal.createdAt) : null;
+  const [msLeft, setMsLeft] = useState(() => expiryTs != null ? expiryTs - Date.now() : null);
+
+  useEffect(() => {
+    if (!expiryTs) return;
+    setMsLeft(expiryTs - Date.now());
+    const id = setInterval(() => setMsLeft(expiryTs - Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, [expiryTs]);
+
+  const showCountdown = msLeft != null && msLeft > -3_600_000; // hide >1h after expiry
+  const countdownChipCls =
+    msLeft == null ? ''
+    : msLeft <= 0               ? 'bg-bear/15 text-bear'
+    : msLeft < 30 * 60_000      ? 'bg-bear/15 text-bear'
+    : msLeft < 90 * 60_000      ? 'bg-wait/15 text-wait'
+    : 'bg-surface-elevated/60 text-slate-400';
 
   return (
     <div className={`card relative overflow-hidden border ${style.ring} ${style.tint} animate-fade-in`}>
@@ -69,11 +99,24 @@ const SignalCard = ({ signal, quote, onPreview }) => {
       {/* Header */}
       <div className="flex items-start justify-between mb-3 pl-1.5">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="font-mono font-bold text-lg text-slate-100">{signal.symbol}</span>
             {rsi != null && (
               <span className={`chip ${rsiChip}`} title="RSI 40–65 is the momentum sweet spot (Gate 4)">
                 RSI {rsi.toFixed(1)}
+              </span>
+            )}
+            {/* Accuracy chip — shown when there is closed-trade history */}
+            {accuracy && accuracy.total > 0 && (
+              <span
+                className={`chip ${
+                  accuracy.winRate >= 60 ? 'bg-buy/15 text-buy'
+                  : accuracy.winRate >= 40 ? 'bg-wait/15 text-wait'
+                  : 'bg-bear/15 text-bear'
+                }`}
+                title={`${accuracy.wins} target exits · ${accuracy.losses} SL exits · ${accuracy.total - accuracy.wins - accuracy.losses} other`}
+              >
+                {accuracy.wins}W {accuracy.losses}L
               </span>
             )}
           </div>
@@ -88,7 +131,7 @@ const SignalCard = ({ signal, quote, onPreview }) => {
             </div>
           )}
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-shrink-0">
           {signal.simonsScore != null && (
             <span className="chip bg-accent/10 text-accent text-xs" title={`Simons composite: ${Math.round(signal.simonsScore)}`}>
               S {Math.round(signal.simonsScore)}
@@ -185,7 +228,7 @@ const SignalCard = ({ signal, quote, onPreview }) => {
 
       {/* Footer */}
       <div className="mt-3 pt-2 pl-1.5 border-t border-slate-700/60 flex items-center justify-between text-xs gap-2">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {signal.confidence ? (
             <span
               className={`chip cursor-help ${CONFIDENCE_STYLES[signal.confidence] ?? 'text-slate-500'}`}
@@ -194,6 +237,15 @@ const SignalCard = ({ signal, quote, onPreview }) => {
               {signal.confidence} confidence*
             </span>
           ) : <span />}
+          {/* Expiry countdown — BUY signals only */}
+          {isBuy && showCountdown && (
+            <span
+              className={`chip ${countdownChipCls}`}
+              title="BUY signals expire at 15:30 IST"
+            >
+              ⏰ {formatCountdown(msLeft)}
+            </span>
+          )}
           <span className="text-slate-500">{timeAgo(signal.createdAt)}</span>
         </div>
         <Link
@@ -210,32 +262,38 @@ const SignalCard = ({ signal, quote, onPreview }) => {
 
 SignalCard.propTypes = {
   signal: PropTypes.shape({
-    _id: PropTypes.string,
-    symbol: PropTypes.string,
-    verdict: PropTypes.string,
-    confidence: PropTypes.string,
-    entryZone: PropTypes.shape({ low: PropTypes.number, high: PropTypes.number }),
-    stopLoss: PropTypes.number,
-    target1: PropTypes.number,
-    target2: PropTypes.number,
-    riskReward: PropTypes.number,
-    shares: PropTypes.number,
+    _id:            PropTypes.string,
+    symbol:         PropTypes.string,
+    verdict:        PropTypes.string,
+    confidence:     PropTypes.string,
+    entryZone:      PropTypes.shape({ low: PropTypes.number, high: PropTypes.number }),
+    stopLoss:       PropTypes.number,
+    target1:        PropTypes.number,
+    target2:        PropTypes.number,
+    riskReward:     PropTypes.number,
+    shares:         PropTypes.number,
     capitalDeployed: PropTypes.number,
-    maxLoss: PropTypes.number,
-    gatesPassed: PropTypes.number,
-    gateDetails: PropTypes.object,
-    indicators: PropTypes.object,
-    reasoning: PropTypes.string,
-    waitCondition: PropTypes.string,
-    createdAt: PropTypes.string,
+    maxLoss:        PropTypes.number,
+    gatesPassed:    PropTypes.number,
+    gateDetails:    PropTypes.object,
+    indicators:     PropTypes.object,
+    reasoning:      PropTypes.string,
+    waitCondition:  PropTypes.string,
+    createdAt:      PropTypes.string,
   }).isRequired,
   quote: PropTypes.shape({
-    price: PropTypes.number,
+    price:     PropTypes.number,
     changePct: PropTypes.number,
   }),
   onPreview: PropTypes.func,
+  accuracy: PropTypes.shape({
+    wins:    PropTypes.number,
+    losses:  PropTypes.number,
+    total:   PropTypes.number,
+    winRate: PropTypes.number,
+  }),
 };
 
-SignalCard.defaultProps = { quote: null, onPreview: null };
+SignalCard.defaultProps = { quote: null, onPreview: null, accuracy: null };
 
 export default SignalCard;

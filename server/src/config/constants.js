@@ -18,22 +18,22 @@ export const MARKET_CLOSE_MINUTE = 30;
 // "(verify)" can shift — correct them from the circular. Weekend holidays are omitted
 // (weekends are already skipped). A wrong/missing entry only skips or wastes a scan —
 // it never places or affects a trade.
-export const NSE_HOLIDAYS = new Set([
-  '2026-01-26', // Republic Day
-  '2026-03-04', // Holi (verify)
-  '2026-03-25', // Ram Navami (verify)
-  '2026-04-01', // Mahavir Jayanti (verify)
-  '2026-04-03', // Good Friday
-  '2026-04-14', // Dr. Ambedkar Jayanti
-  '2026-05-01', // Maharashtra Day
-  '2026-05-27', // Bakri Id / Eid al-Adha (verify)
-  '2026-08-15', // Independence Day (Saturday — already closed)
-  '2026-10-02', // Gandhi Jayanti
-  '2026-10-20', // Dussehra / Vijaya Dashami (verify)
-  '2026-11-10', // Diwali Balipratipada (verify)
-  '2026-11-24', // Guru Nanak Jayanti (verify)
-  '2026-12-25', // Christmas
-]);
+export const NSE_HOLIDAY_LIST = [
+  { date: '2026-01-26', name: 'Republic Day' },
+  { date: '2026-03-04', name: 'Holi' },
+  { date: '2026-03-25', name: 'Ram Navami' },
+  { date: '2026-04-01', name: 'Mahavir Jayanti' },
+  { date: '2026-04-03', name: 'Good Friday' },
+  { date: '2026-04-14', name: 'Dr. Ambedkar Jayanti' },
+  { date: '2026-05-01', name: 'Maharashtra Day' },
+  { date: '2026-05-27', name: 'Eid al-Adha' },
+  { date: '2026-10-02', name: 'Gandhi Jayanti' },
+  { date: '2026-10-20', name: 'Dussehra' },
+  { date: '2026-11-10', name: 'Diwali Balipratipada' },
+  { date: '2026-11-24', name: 'Guru Nanak Jayanti' },
+  { date: '2026-12-25', name: 'Christmas' },
+];
+export const NSE_HOLIDAYS = new Set(NSE_HOLIDAY_LIST.map((h) => h.date));
 
 // Gate thresholds
 export const RSI_MIN = 40;

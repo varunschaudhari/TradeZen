@@ -75,7 +75,9 @@ const MarketStatusBar = ({ market }) => {
           value={formatCurrency(market.niftyPrice, 0)}
           sub={
             changePct != null
-              ? `${changeSign}${changeAbs?.toFixed(0)} (${changeSign}${changePct?.toFixed(2)}%)`
+              ? changeAbs != null
+                ? `${changeSign}${changeAbs.toFixed(0)} (${changeSign}${changePct.toFixed(2)}%)`
+                : `${changeSign}${changePct.toFixed(2)}%`
               : undefined
           }
           subColor={changeColor}

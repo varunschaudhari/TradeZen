@@ -13,6 +13,7 @@ import Signal from '../models/Signal.js';
 import Config from '../models/Config.js';
 import { TRADE_STATUSES } from '../config/constants.js';
 import { getDecisionQualityReport } from '../services/decisionQuality.js';
+import { fetchOhlcv } from '../services/pythonBridge.js';
 
 const router = express.Router();
 
@@ -130,6 +131,58 @@ router.get('/history', async (req, res, next) => {
       data: { monthly: capitalGrowth, initialCapital },
       message: `${capitalGrowth.length} months of history`,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/performance/benchmark — portfolio capital growth vs Nifty 50, aligned monthly
+router.get('/benchmark', async (_req, res, next) => {
+  try {
+    const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+    const [monthly, config, ohlcvResult] = await Promise.all([
+      Trade.aggregate([
+        { $match: { status: TRADE_STATUSES.CLOSED, exitDate: { $exists: true }, realizedPnl: { $exists: true } } },
+        { $group: {
+          _id: { year: { $year: '$exitDate' }, month: { $month: '$exitDate' } },
+          pnl: { $sum: '$realizedPnl' },
+        }},
+        { $sort: { '_id.year': 1, '_id.month': 1 } },
+        { $limit: 36 },
+      ]),
+      Config.findOne().lean(),
+      fetchOhlcv('^NSEI', '3y', '1d').catch(() => null),
+    ]);
+
+    const initialCapital = config?.capital ?? 1_000_000;
+
+    // Build nifty monthly close map: "2026-6" → { first, last }
+    const niftyMap = {};
+    for (const candle of (ohlcvResult?.data ?? [])) {
+      const d = new Date((candle.time ?? 0) * 1000);
+      const key = `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`;
+      if (!niftyMap[key]) niftyMap[key] = { first: candle.close, last: candle.close };
+      else niftyMap[key].last = candle.close;
+    }
+
+    // Find earliest nifty data point that aligns with portfolio start
+    let niftyBase = null;
+    let portfolioCapital = initialCapital;
+
+    const months = monthly.map((m) => {
+      portfolioCapital += m.pnl;
+      const label = `${MONTH_NAMES[m._id.month - 1]} ${m._id.year}`;
+      const key = `${m._id.year}-${m._id.month}`;
+      const nifty = niftyMap[key];
+      if (niftyBase === null && nifty) niftyBase = nifty.first;
+      const niftyCapital = niftyBase && nifty
+        ? Math.round(initialCapital * (nifty.last / niftyBase) * 100) / 100
+        : null;
+      return { label, portfolioCapital: Math.round(portfolioCapital * 100) / 100, niftyCapital };
+    });
+
+    res.json({ success: true, data: { months, initialCapital }, message: 'Benchmark comparison' });
   } catch (err) {
     next(err);
   }

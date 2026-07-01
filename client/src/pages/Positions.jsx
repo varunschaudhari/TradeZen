@@ -3,21 +3,30 @@
  * @description Open positions — live P&L, SL warnings, T1/close actions, log new trade.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import toast from 'react-hot-toast';
 import TradeCard from '../components/TradeCard.jsx';
 import LogTradeModal from '../components/LogTradeModal.jsx';
 import useSocket from '../hooks/useSocket.js';
-import { tradesApi } from '../services/api.js';
-import { SOCKET_EVENTS, EXIT_REASONS } from '../utils/constants.js';
+import { tradesApi, quotesApi, pricesApi, exportApi } from '../services/api.js';
+import { SOCKET_EVENTS, EXIT_REASONS, MAX_OPEN_TRADES } from '../utils/constants.js';
 import { formatCurrency, formatPercent, timeAgo } from '../utils/formatters.js';
 
-const POLL_MS = 45_000; // auto-refresh live P&L every 45s
+const POLL_MS         = 45_000; // MongoDB position fetch
+const PRICE_REFRESH_MS = 30_000; // live price push during market hours
+
+const isMarketHours = () => {
+  const nowIST = new Date(Date.now() + 5.5 * 3600 * 1000);
+  const day  = nowIST.getUTCDay(); // 0=Sun, 6=Sat
+  if (day === 0 || day === 6) return false;
+  const mins = nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
+  return mins >= 9 * 60 + 15 && mins <= 15 * 60 + 30; // 9:15–15:30 IST
+};
 
 /* ── Close Trade Modal ───────────────────────────────────────────────────────── */
 const CloseTradeModal = ({ trade, onConfirm, onCancel }) => {
   const [exitPrice, setExitPrice] = useState(String(trade?.currentPrice ?? trade?.stopLoss ?? ''));
-  const [reason,    setReason]    = useState(EXIT_REASONS.MANUAL);
+  const [reason,    setReason]    = useState(trade?._defaultReason ?? EXIT_REASONS.MANUAL);
 
   const handleConfirm = () => {
     const price = parseFloat(exitPrice);
@@ -79,15 +88,21 @@ const CloseTradeModal = ({ trade, onConfirm, onCancel }) => {
 
 /* ── Positions Page ──────────────────────────────────────────────────────────── */
 const Positions = () => {
-  const [trades,       setTrades]       = useState([]);
-  const [summary,      setSummary]      = useState(null);
-  const [updatedAt,    setUpdatedAt]    = useState(null);
-  const [loading,      setLoading]      = useState(true);
-  const [error,        setError]        = useState(null);
-  const [slWarnings,   setSlWarnings]   = useState(new Set());
-  const [closingTrade, setClosingTrade] = useState(null);
-  const [showLogModal, setShowLogModal] = useState(false);
+  const [trades,          setTrades]          = useState([]);
+  const [summary,         setSummary]         = useState(null);
+  const [updatedAt,       setUpdatedAt]        = useState(null);
+  const [loading,         setLoading]          = useState(true);
+  const [error,           setError]            = useState(null);
+  const [slWarnings,      setSlWarnings]       = useState(new Set());
+  const [closingTrade,    setClosingTrade]     = useState(null);
+  const [showLogModal,    setShowLogModal]     = useState(false);
+  const [priceRefreshing, setPriceRefreshing]  = useState(false);
+  const [monitoring,      setMonitoring]       = useState(false);
   const { subscribe } = useSocket();
+
+  /* Keep a stable ref to current trades for the price-refresh closure */
+  const tradesRef = useRef([]);
+  useEffect(() => { tradesRef.current = trades; }, [trades]);
 
   const loadTrades = useCallback(async () => {
     try {
@@ -105,11 +120,34 @@ const Positions = () => {
 
   useEffect(() => { loadTrades(); }, [loadTrades]);
 
-  /* Live auto-refresh on a timer (fresh quotes → live P&L + suggestions) */
+  /* MongoDB position poll — keeps suggestions + summary fresh */
   useEffect(() => {
     const id = setInterval(loadTrades, POLL_MS);
     return () => clearInterval(id);
   }, [loadTrades]);
+
+  /* Live price push — fetches quotes and writes currentPrice to DB every 30s during market hours */
+  useEffect(() => {
+    const refresh = async () => {
+      const syms = [...new Set(tradesRef.current.map((t) => t.symbol))];
+      if (!syms.length || !isMarketHours()) return;
+      setPriceRefreshing(true);
+      try {
+        const priceMap = await quotesApi.get(syms);
+        const prices = syms
+          .filter((s) => priceMap[s]?.price != null)
+          .map((s) => ({ symbol: s, currentPrice: priceMap[s].price }));
+        if (prices.length) {
+          await pricesApi.update(prices);
+          await loadTrades(); // pick up the freshly-written unrealizedPnl values
+        }
+      } catch { /* non-critical — stale prices are preferable to crashing */ }
+      finally { setPriceRefreshing(false); }
+    };
+
+    const id = setInterval(refresh, PRICE_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [loadTrades]); // loadTrades is stable (useCallback [])
 
   /* Auto-refresh after scan completes */
   useEffect(() => subscribe(SOCKET_EVENTS.SCAN_COMPLETE, () => loadTrades()), [subscribe, loadTrades]);
@@ -129,7 +167,23 @@ const Positions = () => {
   useEffect(() => {
     return subscribe(SOCKET_EVENTS.TRADE_TARGET1, (updated) => {
       setTrades((prev) => prev.map((t) => (t._id === updated._id ? updated : t)));
-      toast.success(`🎯 Target 1 hit: ${updated.symbol} — SL trailed to entry`);
+      toast.success(`Target 1 hit: ${updated.symbol} — SL trailed to entry`);
+    });
+  }, [subscribe]);
+
+  /* Trade auto-closed (SL hit, T2 hit, or manual close on another tab) */
+  useEffect(() => {
+    return subscribe(SOCKET_EVENTS.TRADE_CLOSED, ({ _id, symbol, exitReason, realizedPnl }) => {
+      setTrades((prev) => prev.filter((t) => t._id !== _id));
+      setSlWarnings((prev) => { const s = new Set(prev); s.delete(String(_id)); return s; });
+      const pnlStr = realizedPnl != null ? ` · ${realizedPnl >= 0 ? '+' : ''}₹${Math.round(realizedPnl).toLocaleString('en-IN')}` : '';
+      const reasonLabels = { STOPLOSS: 'SL hit', TARGET2: 'T2 hit', MANUAL: 'Closed', TARGET1: 'T1 booked', EARNINGS: 'Earnings exit' };
+      const label = reasonLabels[exitReason] ?? exitReason;
+      if (exitReason === 'STOPLOSS') {
+        toast.error(`${label}: ${symbol}${pnlStr}`);
+      } else {
+        toast.success(`${label}: ${symbol}${pnlStr}`);
+      }
     });
   }, [subscribe]);
 
@@ -180,6 +234,52 @@ const Positions = () => {
     setTrades((prev) => [newTrade, ...prev]);
   }, []);
 
+  const handleRunMonitor = useCallback(async () => {
+    setMonitoring(true);
+    try {
+      const res = await tradesApi.refresh();
+      const s = res.data;
+      const parts = [];
+      if (s.t1) parts.push(`${s.t1} T1`);
+      if (s.t2) parts.push(`${s.t2} T2`);
+      if (s.slHit) parts.push(`${s.slHit} SL`);
+      if (s.warnings) parts.push(`${s.warnings} SL warning(s)`);
+      toast.success(
+        parts.length
+          ? `Monitor ran — ${parts.join(', ')} processed`
+          : `Monitor ran — ${s.checked} position(s) checked, all clear`
+      );
+      await loadTrades();
+    } catch (err) {
+      toast.error(`Monitor failed: ${err.message}`);
+    } finally {
+      setMonitoring(false);
+    }
+  }, [loadTrades]);
+
+  const handleUpdateNotes = useCallback(async (id, notes) => {
+    try {
+      const res = await tradesApi.update(id, { notes });
+      setTrades((prev) => prev.map((t) => (t._id === id ? { ...t, notes: res.data?.notes ?? notes } : t)));
+      toast.success('Note saved');
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }, []);
+
+  const handleQuickClose = useCallback(async (id, price) => {
+    const trade = trades.find((t) => t._id === id);
+    if (!price || price <= 0) { toast.error('No price available to close at'); return; }
+    try {
+      await tradesApi.close(id, price, EXIT_REASONS.MANUAL);
+      setTrades((prev) => prev.filter((t) => t._id !== id));
+      setSlWarnings((prev) => { const s = new Set(prev); s.delete(String(id)); return s; });
+      toast.success(`${trade?.symbol ?? ''} closed at ${formatCurrency(price)}`);
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }, [trades]);
+
   /* ── Summary stats (prefer server live summary, fall back to local) ─────── */
   const totalDeployed    = summary?.totalDeployed   ?? trades.reduce((s, t) => s + (t.capitalDeployed ?? 0), 0);
   const totalUnrealized  = summary?.totalUnrealized ?? trades.reduce((s, t) => s + (t.unrealizedPnl  ?? 0), 0);
@@ -204,12 +304,21 @@ const Positions = () => {
           <h1 className="text-xl font-bold text-slate-100">
             Open Positions
             <span className="ml-2 text-sm font-normal text-slate-500">
-              ({trades.length} / 15 slots)
+              ({trades.length} / {MAX_OPEN_TRADES} slots)
             </span>
           </h1>
           <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-bull animate-pulse" />
-            Live · auto-refreshes every {POLL_MS / 1000}s
+            {isMarketHours() ? (
+              <>
+                <span className={`w-1.5 h-1.5 rounded-full ${priceRefreshing ? 'bg-blue-400 animate-pulse' : 'bg-bull animate-pulse'}`} />
+                {priceRefreshing ? 'Refreshing prices…' : `Live · prices refresh every ${PRICE_REFRESH_MS / 1000}s`}
+              </>
+            ) : (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                Market closed · prices frozen
+              </>
+            )}
             {updatedAt ? ` · updated ${timeAgo(updatedAt)}` : ''}
             {summary && summary.quotesLive < summary.count
               ? ` · ${summary.count - summary.quotesLive} stale quote(s)`
@@ -217,9 +326,24 @@ const Positions = () => {
           </p>
         </div>
         <div className="flex gap-2">
-          <button onClick={loadTrades} className="btn-primary text-xs px-3 py-1">
+          <button onClick={loadTrades} className="btn-ghost text-xs px-3 py-1">
             Refresh
           </button>
+          <button
+            onClick={handleRunMonitor}
+            disabled={monitoring}
+            className="btn-primary text-xs px-3 py-1 disabled:opacity-60"
+            title="Run the position monitor now — auto-marks T1/T2 hits and SL exits"
+          >
+            {monitoring ? 'Checking…' : '⚡ Check exits'}
+          </button>
+          <a
+            href={exportApi.tradesUrl()}
+            download="trades.csv"
+            className="text-xs px-3 py-1.5 bg-surface-card border border-slate-700 hover:border-slate-500 text-slate-300 rounded-lg transition-colors font-medium inline-flex items-center gap-1"
+          >
+            ↓ CSV
+          </a>
           <button
             onClick={() => setShowLogModal(true)}
             className="text-xs px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg transition-colors font-medium"
@@ -285,7 +409,7 @@ const Positions = () => {
           </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div className="stagger-grid grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {trades.map((trade) => (
             <div
               key={trade._id}
@@ -297,6 +421,8 @@ const Positions = () => {
                 onMarkClosed={handleCloseOpen}
                 onMarkSLHit={handleSLHit}
                 onTrailStop={handleTrailStop}
+                onUpdateNotes={handleUpdateNotes}
+                onQuickClose={handleQuickClose}
               />
             </div>
           ))}

@@ -188,7 +188,18 @@ export const logTrade = async (data) => {
  * @param {object} config - Config doc (paperTradeMode, autoPaperTrade, capital)
  * @returns {Promise<object|null>} The created paper Trade, or null if skipped
  */
-export const autoOpenPaperTrade = async (signal, config) => {
+// Serialize auto-opens process-wide. A scan processes BUYs concurrently and calls this
+// fire-and-forget, so a plain check-then-create races: every call reads "<3 open" before
+// any commits, blowing past MAX_OPEN_TRADES / the capital cap. Chaining each call onto the
+// previous makes the guard + create atomic relative to other auto-opens.
+let _autoOpenChain = Promise.resolve();
+export const autoOpenPaperTrade = (signal, config) => {
+  const next = _autoOpenChain.then(() => openPaperTradeFromSignal(signal, config));
+  _autoOpenChain = next.then(() => {}, () => {}); // keep the chain alive on success or error
+  return next;
+};
+
+const openPaperTradeFromSignal = async (signal, config) => {
   if (!config?.paperTradeMode || !config?.autoPaperTrade) return null;
   if (signal?.verdict !== VERDICTS.BUY) return null;
 
@@ -265,6 +276,14 @@ export const markTarget1Hit = async (trade, exitPrice) => {
 export const closeTrade = async (trade, { exitPrice, exitReason = EXIT_REASONS.MANUAL }) => {
   Object.assign(trade, computeCloseFields(trade, exitPrice, exitReason));
   await trade.save();
+  // Always emit TRADE_CLOSED so the Positions UI removes the card immediately
+  emitEvent(SOCKET_EVENTS.TRADE_CLOSED, {
+    _id: String(trade._id),
+    symbol: trade.symbol,
+    exitReason,
+    exitPrice,
+    realizedPnl: trade.realizedPnl,
+  });
   if (exitReason === EXIT_REASONS.TARGET2) {
     emitEvent(SOCKET_EVENTS.TRADE_TARGET2, trade.toObject());
     sendTarget2Hit(trade).catch((e) => logger.error('sendTarget2Hit failed', { error: e.message }));

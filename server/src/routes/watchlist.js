@@ -3,6 +3,7 @@
  * @description REST routes for the stock watchlist stored in Config
  *   GET    /api/watchlist          — current watchlist
  *   POST   /api/watchlist          — add a stock (symbol + optional sector)
+ *   PATCH  /api/watchlist/:symbol  — update notes on a watchlist item
  *   DELETE /api/watchlist/:symbol  — remove a stock
  * @author SwingTrader AI Team
  */
@@ -18,6 +19,10 @@ const router = express.Router();
 const addSchema = Joi.object({
   symbol: Joi.string().uppercase().alphanum().min(1).max(20).required(),
   sector: Joi.string().max(50).allow('').optional(),
+});
+
+const noteSchema = Joi.object({
+  notes: Joi.string().max(300).allow('').required(),
 });
 
 // GET /api/watchlist
@@ -55,6 +60,30 @@ router.post('/', validateBody(addSchema), async (req, res, next) => {
     const added = config.watchlist.find((w) => w.symbol === symbol);
     logger.info('Watchlist: added', { symbol, sector });
     res.status(201).json({ success: true, data: added, message: `${symbol} added to watchlist` });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /api/watchlist/:symbol — update notes on a watchlist item
+router.patch('/:symbol', validateBody(noteSchema), async (req, res, next) => {
+  try {
+    const symbol = req.params.symbol.toUpperCase();
+    const { notes } = req.body;
+
+    const result = await Config.findOneAndUpdate(
+      { 'watchlist.symbol': symbol },
+      { $set: { 'watchlist.$.notes': notes } },
+      { new: true }
+    ).lean();
+
+    if (!result) {
+      return res.status(404).json({ success: false, error: `${symbol} not found in watchlist`, code: 404 });
+    }
+
+    const updated = result.watchlist.find((w) => w.symbol === symbol);
+    logger.info('Watchlist: notes updated', { symbol });
+    res.json({ success: true, data: updated, message: `Notes updated for ${symbol}` });
   } catch (err) {
     next(err);
   }

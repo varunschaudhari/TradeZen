@@ -14,11 +14,21 @@ import express from 'express';
 import mongoose from 'mongoose';
 import Joi from 'joi';
 import Trade from '../models/Trade.js';
+import Stock from '../models/Stock.js';
+import Config from '../models/Config.js';
 import { validateBody } from '../middleware/validateRequest.js';
 import { sendTarget1Hit, sendTarget2Hit } from '../services/notifier.js';
 import { getLivePositions, refreshOpenPositions } from '../services/positionTracker.js';
 import { emitEvent, SOCKET_EVENTS } from '../socket/socketHandlers.js';
-import { TRADE_STATUSES, EXIT_REASONS } from '../config/constants.js';
+import {
+  TRADE_STATUSES,
+  EXIT_REASONS,
+  MAX_OPEN_TRADES,
+  MAX_CAPITAL_DEPLOYED_PCT,
+  DAILY_LOSS_PAUSE_PCT,
+  DEFAULT_RISK_PCT,
+  DEFAULT_CAPITAL,
+} from '../config/constants.js';
 import { logger } from '../config/logger.js';
 
 const router = express.Router();
@@ -78,6 +88,152 @@ router.get('/', async (req, res, next) => {
   }
 });
 
+// GET /api/trades/sector-concentration — capital distribution by sector for open trades
+router.get('/sector-concentration', async (_req, res, next) => {
+  try {
+    const openTrades = await Trade.find({ status: TRADE_STATUSES.OPEN }).lean();
+    if (!openTrades.length) {
+      return res.json({ success: true, data: { sectors: [], totalDeployed: 0, hasWarning: false, warningThreshold: 40 } });
+    }
+
+    const symbols = [...new Set(openTrades.map((t) => t.symbol))];
+    const stocks  = await Stock.find({ symbol: { $in: symbols } }, { symbol: 1, sector: 1 }).lean();
+    const sectorMap = Object.fromEntries(stocks.map((s) => [s.symbol, s.sector ?? 'Unknown']));
+
+    const sectorTotals = {};
+    let totalDeployed = 0;
+    for (const trade of openTrades) {
+      const sector = sectorMap[trade.symbol] ?? 'Unknown';
+      sectorTotals[sector] = (sectorTotals[sector] ?? 0) + (trade.capitalDeployed ?? 0);
+      totalDeployed += trade.capitalDeployed ?? 0;
+    }
+
+    const sectors = Object.entries(sectorTotals)
+      .map(([sector, deployed]) => ({
+        sector,
+        deployed: Math.round(deployed),
+        pct: totalDeployed > 0 ? Math.round((deployed / totalDeployed) * 1000) / 10 : 0,
+        symbols: openTrades.filter((t) => (sectorMap[t.symbol] ?? 'Unknown') === sector).map((t) => t.symbol),
+      }))
+      .sort((a, b) => b.deployed - a.deployed);
+
+    const THRESHOLD = 40;
+    res.json({
+      success: true,
+      data: { sectors, totalDeployed: Math.round(totalDeployed), hasWarning: sectors.some((s) => s.pct >= THRESHOLD), warningThreshold: THRESHOLD },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/trades/accuracy — closed trade win/loss breakdown per symbol
+// Returns { [symbol]: { wins, losses, total, winRate } }
+router.get('/accuracy', async (_req, res, next) => {
+  try {
+    const results = await Trade.aggregate([
+      { $match: { status: TRADE_STATUSES.CLOSED } },
+      {
+        $group: {
+          _id: '$symbol',
+          wins:   { $sum: { $cond: [{ $in: ['$exitReason', [EXIT_REASONS.TARGET1, EXIT_REASONS.TARGET2]] }, 1, 0] } },
+          losses: { $sum: { $cond: [{ $eq: ['$exitReason', EXIT_REASONS.STOPLOSS] }, 1, 0] } },
+          total:  { $sum: 1 },
+        },
+      },
+    ]).lean();
+
+    const bySymbol = {};
+    for (const r of results) {
+      bySymbol[r._id] = {
+        wins:    r.wins,
+        losses:  r.losses,
+        total:   r.total,
+        winRate: r.total > 0 ? Math.round((r.wins / r.total) * 100) : null,
+      };
+    }
+    res.json({ success: true, data: bySymbol });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/trades/risk-summary — real-time capital protection state
+router.get('/risk-summary', async (_req, res, next) => {
+  try {
+    const config = await Config.findOne().lean();
+    const capital           = config?.capital           ?? DEFAULT_CAPITAL;
+    const riskPct           = config?.riskPercentage    ?? DEFAULT_RISK_PCT;
+
+    // Open positions
+    const openTrades = await Trade.find({ status: TRADE_STATUSES.OPEN }).lean();
+    const openCount          = openTrades.length;
+    const totalCapitalDeployed = openTrades.reduce((s, t) => s + (t.capitalDeployed ?? 0), 0);
+    const capitalDeployedPct   = capital > 0 ? (totalCapitalDeployed / capital) * 100 : 0;
+
+    // Today's closed trades (UTC midnight boundary)
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
+    const todayTrades = await Trade.find({
+      status: TRADE_STATUSES.CLOSED,
+      exitDate: { $gte: todayStart },
+    }).lean();
+
+    const dailyRealizedPnl = todayTrades.reduce((s, t) => s + (t.realizedPnl ?? 0), 0);
+    const dailyLossPct     = dailyRealizedPnl < 0 && capital > 0
+      ? Math.abs(dailyRealizedPnl / capital) * 100
+      : 0;
+    const isDailyLossPaused = dailyRealizedPnl <= -(capital * (DAILY_LOSS_PAUSE_PCT / 100));
+
+    res.json({
+      success: true,
+      data: {
+        // ── Position limits ──────────────────────────────────────
+        openCount,
+        maxOpenTrades:  MAX_OPEN_TRADES,
+        slotsLeft:      Math.max(0, MAX_OPEN_TRADES - openCount),
+        slotsUsedPct:   Math.round((openCount / MAX_OPEN_TRADES) * 1000) / 10,
+
+        // ── Capital limits ───────────────────────────────────────
+        capital,
+        totalCapitalDeployed:  Math.round(totalCapitalDeployed),
+        capitalDeployedPct:    Math.round(capitalDeployedPct * 10) / 10,
+        maxCapitalDeployedPct: MAX_CAPITAL_DEPLOYED_PCT,
+        capitalAvailable:      Math.round(capital - totalCapitalDeployed),
+
+        // ── Daily loss ───────────────────────────────────────────
+        dailyRealizedPnl:      Math.round(dailyRealizedPnl),
+        dailyLossPct:          Math.round(dailyLossPct * 10) / 10,
+        isDailyLossPaused,
+        dailyLossThreshold:    DAILY_LOSS_PAUSE_PCT,
+        dailyWins:             todayTrades.filter((t) => (t.realizedPnl ?? 0) > 0).length,
+        dailyLosses:           todayTrades.filter((t) => (t.realizedPnl ?? 0) < 0).length,
+
+        // ── Risk config ──────────────────────────────────────────
+        riskPct,
+        perTradeMaxLoss: Math.round(capital * (riskPct / 100)),
+
+        // ── Open positions breakdown ─────────────────────────────
+        openPositions: openTrades.map((t) => ({
+          _id:             t._id,
+          symbol:          t.symbol,
+          capitalDeployed: t.capitalDeployed,
+          capitalPct:      capital > 0
+            ? Math.round((t.capitalDeployed / capital) * 1000) / 10
+            : 0,
+          unrealizedPnl:   t.unrealizedPnl ?? 0,
+          currentPrice:    t.currentPrice,
+          stopLoss:        t.stopLoss,
+          entryPrice:      t.entryPrice,
+          target1Hit:      t.target1Hit,
+        })),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/trades/open — must be before /:id
 router.get('/open', async (_req, res, next) => {
   try {
@@ -132,6 +288,43 @@ router.post('/', validateBody(newTradeSchema), async (req, res, next) => {
   }
 });
 
+// GET /api/trades/export — CSV download of all trades (must be before /:id)
+router.get('/export', async (_req, res, next) => {
+  try {
+    const trades = await Trade.find().sort({ createdAt: -1 }).lean();
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""').replace(/\n/g, ' ')}"`;
+    const header = ['Date','Symbol','Status','Entry Price','Stop Loss','Target 1','Target 2','Shares','Capital Deployed (₹)','Current Price','Exit Price','Exit Reason','Realized P&L (₹)','Realized P&L (%)','Notes'];
+    const rows = trades.map((t) => {
+      const realizedPct = t.capitalDeployed && t.realizedPnl != null
+        ? ((t.realizedPnl / t.capitalDeployed) * 100).toFixed(2)
+        : '';
+      return [
+        t.entryDate
+          ? new Date(t.entryDate).toISOString().slice(0, 10)
+          : new Date(t.createdAt).toISOString().slice(0, 10),
+        t.symbol,
+        t.status,
+        t.entryPrice ?? '',
+        t.stopLoss ?? '',
+        t.target1 ?? '',
+        t.target2 ?? '',
+        t.shares ?? '',
+        t.capitalDeployed ?? '',
+        t.currentPrice ?? '',
+        t.exitPrice ?? '',
+        t.exitReason ?? '',
+        t.realizedPnl ?? '',
+        realizedPct,
+        t.notes ?? '',
+      ].map(esc).join(',');
+    });
+    const csv = '﻿' + [header.map(esc).join(','), ...rows].join('\r\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="trades.csv"');
+    res.send(csv);
+  } catch (err) { next(err); }
+});
+
 // PATCH /api/trades/:id — update price or SL on open trade
 router.patch('/:id', validateBody(updateTradeSchema), async (req, res, next) => {
   try {
@@ -180,10 +373,11 @@ router.patch('/:id/target1', async (req, res, next) => {
 
     trade.target1Hit = true;
     trade.target1HitDate = new Date();
-    // Recommend trailing SL to entry — store as suggestion in notes if not already slTrailed
+    trade.target1ExitPrice = trade.currentPrice ?? trade.target1; // best available fill price
     if (!trade.slTrailed) {
       trade.slTrailed = true;
-      trade.stopLoss = trade.entryPrice; // trail to break-even
+      trade.slTrailedTo = trade.entryPrice; // break-even — consistent with monitor path
+      trade.stopLoss = trade.entryPrice;
     }
     await trade.save();
 
@@ -222,6 +416,15 @@ router.patch('/:id/close', validateBody(closeTradeSchema), async (req, res, next
     if (notes) trade.notes = notes;
 
     await trade.save();
+
+    // Notify all connected clients so the Positions UI removes the card immediately
+    emitEvent(SOCKET_EVENTS.TRADE_CLOSED, {
+      _id: String(trade._id),
+      symbol: trade.symbol,
+      exitReason,
+      exitPrice,
+      realizedPnl: trade.realizedPnl,
+    });
 
     if (exitReason === EXIT_REASONS.TARGET2) {
       sendTarget2Hit(trade.toObject()).catch(() => {});

@@ -15,6 +15,7 @@ export const SOCKET_EVENTS = Object.freeze({
   MARKET_UPDATE: 'market:update',
   TRADE_TARGET1: 'trade:target1',
   TRADE_TARGET2: 'trade:target2',
+  TRADE_CLOSED: 'trade:closed',
   TRADE_SL_WARNING: 'trade:sl_warning',
   TRADE_EARNINGS: 'trade:earnings',
   MARKET_BEARMODE: 'market:bearmode',

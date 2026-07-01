@@ -11,9 +11,10 @@ import { MARKET_MODES } from '../config/constants.js';
 
 const watchlistItemSchema = new mongoose.Schema(
   {
-    symbol: { type: String, required: true, uppercase: true },
-    sector: String,
+    symbol:    { type: String, required: true, uppercase: true },
+    sector:    String,
     addedDate: { type: Date, default: Date.now },
+    notes:     { type: String, default: '' },
   },
   { _id: false }
 );

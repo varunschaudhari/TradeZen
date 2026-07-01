@@ -36,6 +36,7 @@ from app.models.schemas import (
 )
 from app.services.data_fetcher import (
     batch_fetch_latest_close,
+    batch_fetch_live_price,
     fetch_ohlcv,
     fetch_ticker_info,
     fetch_weekly_ohlcv,
@@ -318,7 +319,7 @@ async def get_quotes(symbols: str) -> QuotesResponse:
     if not requested:
         return QuotesResponse(quotes={})
 
-    closes = batch_fetch_latest_close(requested)
+    closes = batch_fetch_live_price(requested)
     quotes: dict[str, Quote] = {}
     for sym in requested:
         pair = closes.get(sym)

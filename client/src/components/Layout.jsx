@@ -6,11 +6,42 @@
  *  Desktop (≥ md): sidebar always visible at left, content shifted right by w-52.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useApp } from '../context/AppContext.jsx';
+import { useNotifications } from '../context/NotificationContext.jsx';
+import NotificationDrawer, { BellIcon } from './NotificationDrawer.jsx';
 import ChatWidget from './ChatWidget.jsx';
+
+/* ── Mobile bottom tab config ───────────────────────────────────────────────── */
+const BOTTOM_TABS = [
+  {
+    path: '/dashboard',
+    label: 'Home',
+    d: 'M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25',
+  },
+  {
+    path: '/signals',
+    label: 'Signals',
+    d: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zm8.25-4.5c0-.621.504-1.125 1.125-1.125h2.25C15.496 7.5 16 8.004 16 8.625v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zm8.25-6c0-.621.504-1.125 1.125-1.125h2.25C21.496 1.5 22 2.004 22 2.625v17.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V2.625z',
+  },
+  {
+    path: '/positions',
+    label: 'Trades',
+    d: 'M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941',
+  },
+  {
+    path: '/performance',
+    label: 'Stats',
+    d: 'M7.5 14.25v2.25m3-4.5v4.5m3-6.75v6.75m3-9v9M6 20.25h12A2.25 2.25 0 0020.25 18V6A2.25 2.25 0 0018 3.75H6A2.25 2.25 0 003.75 6v12A2.25 2.25 0 006 20.25z',
+  },
+  {
+    path: '/watchlist',
+    label: 'Watch',
+    d: 'M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z',
+  },
+];
 
 /* ── Icons ──────────────────────────────────────────────────────────────────── */
 const Icon = ({ d, className = 'w-5 h-5 flex-shrink-0' }) => (
@@ -57,9 +88,19 @@ const NAV_SECTIONS = [
         d: 'M3.75 5.25h16.5m-16.5 4.5h16.5m-16.5 4.5h16.5m-16.5 4.5h16.5',
       },
       {
+        path: '/universe',
+        label: 'Universe',
+        d: 'M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418',
+      },
+      {
         path: '/positions',
         label: 'Positions',
         d: 'M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941',
+      },
+      {
+        path: '/risk',
+        label: 'Risk',
+        d: 'M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z',
       },
     ],
   },
@@ -80,6 +121,16 @@ const NAV_SECTIONS = [
         path: '/watchlist',
         label: 'Watchlist',
         d: 'M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z',
+      },
+      {
+        path: '/backtest',
+        label: 'Backtesting',
+        d: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z',
+      },
+      {
+        path: '/gates',
+        label: 'Gate Analytics',
+        d: 'M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z',
       },
     ],
   },
@@ -103,9 +154,21 @@ const MODE_STYLES = {
 };
 
 /* ── Sidebar content (shared between desktop + mobile) ───────────────────────── */
-const SidebarContent = ({ onNavClick }) => {
+const SidebarContent = ({ onNavClick, onBell }) => {
   const { isConnected, marketMode } = useApp();
+  const { unreadCount } = useNotifications();
   const mode = MODE_STYLES[marketMode] ?? { dot: 'bg-slate-600', text: 'text-slate-400', label: marketMode ?? '—' };
+  const [bellRing, setBellRing] = useState(false);
+  const prevCount = useRef(unreadCount);
+
+  useEffect(() => {
+    if (unreadCount > prevCount.current) {
+      setBellRing(true);
+      const t = setTimeout(() => setBellRing(false), 700);
+      return () => clearTimeout(t);
+    }
+    prevCount.current = unreadCount;
+  }, [unreadCount]);
 
   return (
     <>
@@ -175,6 +238,9 @@ const SidebarContent = ({ onNavClick }) => {
               {isConnected ? 'Live feed' : 'Disconnected'}
             </span>
           </div>
+          <span className={bellRing ? 'bell-ring' : ''}>
+            <BellIcon count={unreadCount} onClick={onBell} />
+          </span>
         </div>
         <div className="flex items-center justify-between rounded-lg bg-surface-elevated/40 px-3 py-2 border border-slate-700/60">
           <span className="text-[11px] text-slate-500 uppercase tracking-wide">Market</span>
@@ -190,11 +256,14 @@ const SidebarContent = ({ onNavClick }) => {
 
 SidebarContent.propTypes = {
   onNavClick: PropTypes.func,
+  onBell:     PropTypes.func,
 };
 
 /* ── Layout ─────────────────────────────────────────────────────────────────── */
 const Layout = ({ children }) => {
-  const [open, setOpen] = useState(false);
+  const [open,         setOpen]         = useState(false);
+  const [notifOpen,    setNotifOpen]    = useState(false);
+  const { unreadCount } = useNotifications();
   const location = useLocation();
 
   /* Close sidebar on route change (mobile) */
@@ -238,7 +307,7 @@ const Layout = ({ children }) => {
           <CloseIcon />
         </button>
 
-        <SidebarContent onNavClick={() => setOpen(false)} />
+        <SidebarContent onNavClick={() => setOpen(false)} onBell={() => setNotifOpen(true)} />
       </aside>
 
       {/* ── Mobile top-bar ────────────────────────────────────────────────── */}
@@ -253,22 +322,58 @@ const Layout = ({ children }) => {
         <span className="font-semibold text-slate-100 text-sm tracking-tight">
           SwingTrader<span className="text-accent"> AI</span>
         </span>
-        <span
-          className="ml-auto px-1.5 py-0.5 rounded bg-wait/15 text-wait text-[10px] font-bold"
-          title="Paper mode — hypothetical positions only. The system never places real orders."
-        >
-          PAPER
-        </span>
+        <div className="ml-auto flex items-center gap-1.5">
+          <BellIcon count={unreadCount} onClick={() => setNotifOpen(true)} />
+          <span
+            className="px-1.5 py-0.5 rounded bg-wait/15 text-wait text-[10px] font-bold"
+            title="Paper mode — hypothetical positions only. The system never places real orders."
+          >
+            PAPER
+          </span>
+        </div>
       </header>
 
       {/* ── Main content ──────────────────────────────────────────────────── */}
-      {/* pt-12 on mobile for the top-bar; no padding on desktop */}
-      <main className="flex-1 min-h-screen overflow-x-hidden md:ml-60 pt-12 md:pt-0">
+      {/* pt-12 on mobile for the top-bar + pb-16 for bottom tab bar */}
+      <main className="flex-1 min-h-screen overflow-x-hidden md:ml-60 pt-12 md:pt-0 pb-16 md:pb-0">
         {children}
       </main>
 
+      {/* ── Mobile bottom tab bar ─────────────────────────────────────────── */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 glass border-t border-slate-700/60 flex items-stretch h-16">
+        {BOTTOM_TABS.map(({ path, label, d }) => (
+          <NavLink
+            key={path}
+            to={path}
+            className={({ isActive }) =>
+              `flex-1 flex flex-col items-center justify-center gap-0.5 text-[10px] transition-colors ${
+                isActive ? 'text-accent' : 'text-slate-500 hover:text-slate-300'
+              }`
+            }
+          >
+            {({ isActive }) => (
+              <>
+                <svg
+                  className={`w-5 h-5 flex-shrink-0 transition-transform ${isActive ? 'scale-110' : ''}`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={isActive ? 2.2 : 1.8}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d={d} />
+                </svg>
+                <span className={`font-medium ${isActive ? 'text-accent' : ''}`}>{label}</span>
+              </>
+            )}
+          </NavLink>
+        ))}
+      </nav>
+
       {/* ── Ask Claude — floating, context-aware, available on every page ──── */}
       <ChatWidget />
+
+      {/* ── Notification drawer ───────────────────────────────────────────── */}
+      <NotificationDrawer open={notifOpen} onClose={() => setNotifOpen(false)} />
     </div>
   );
 };

@@ -34,26 +34,31 @@ export const signalsApi = {
 };
 
 export const tradesApi = {
-  getAll: () => api.get('/api/trades'),
-  getOpen: () => api.get('/api/trades/open'),
-  getLive: () => api.get('/api/trades/live'),
-  refresh: () => api.post('/api/trades/refresh'),
-  create: (data) => api.post('/api/trades', data),
-  update: (id, data) => api.patch(`/api/trades/${id}`, data),
-  markT1Hit: (id) => api.patch(`/api/trades/${id}/target1`),
+  getAll:                () => api.get('/api/trades'),
+  getOpen:               () => api.get('/api/trades/open'),
+  getLive:               () => api.get('/api/trades/live'),
+  getSectorConcentration:() => api.get('/api/trades/sector-concentration'),
+  getAccuracy:           () => api.get('/api/trades/accuracy'),
+  getRiskSummary:        () => api.get('/api/trades/risk-summary'),
+  refresh:               () => api.post('/api/trades/refresh'),
+  create:      (data)    => api.post('/api/trades', data),
+  update:      (id, data)=> api.patch(`/api/trades/${id}`, data),
+  markT1Hit:   (id)      => api.patch(`/api/trades/${id}/target1`),
   close: (id, exitPrice, exitReason) =>
     api.patch(`/api/trades/${id}/close`, { exitPrice, exitReason }),
 };
 
 export const watchlistApi = {
-  get: () => api.get('/api/watchlist'),
-  add: (symbol, sector) => api.post('/api/watchlist', { symbol, sector }),
-  remove: (symbol) => api.delete(`/api/watchlist/${symbol}`),
+  get:        ()               => api.get('/api/watchlist'),
+  add:        (symbol, sector) => api.post('/api/watchlist', { symbol, sector }),
+  updateNote: (symbol, notes)  => api.patch(`/api/watchlist/${symbol}`, { notes }),
+  remove:     (symbol)         => api.delete(`/api/watchlist/${symbol}`),
 };
 
 export const performanceApi = {
-  get: () => api.get('/api/performance'),
-  getHistory: (limit = 12) => api.get('/api/performance/history', { params: { limit } }),
+  get:          ()            => api.get('/api/performance'),
+  getHistory:   (limit = 12) => api.get('/api/performance/history', { params: { limit } }),
+  getBenchmark: ()            => api.get('/api/performance/benchmark'),
 };
 
 export const marketApi = {
@@ -67,6 +72,15 @@ export const quotesApi = {
 
 export const stockApi = {
   getDetail: (symbol) => api.get(`/api/stock/${symbol}`),
+};
+
+export const stocksApi = {
+  getAll:      (params) => api.get('/api/stocks', { params }),
+  getStats:    ()       => api.get('/api/stocks/stats'),
+  add:         (data)   => api.post('/api/stocks', data),
+  remove:      (symbol) => api.delete(`/api/stocks/${symbol}`),
+  toggle:      (symbol) => api.patch(`/api/stocks/${symbol}/toggle`),
+  bulkToggle:  (symbols, active) => api.post('/api/stocks/bulk-toggle', { symbols, active }),
 };
 
 export const universeApi = {
@@ -117,6 +131,36 @@ export const analysisApi = {
   // Python data fetches) — the first call for a symbol is the slowest (cold OHLCV cache).
   // Override the 30s global default with a 120s leash so it never times out client-side.
   getReport: (symbol) => api.get(`/api/analysis/${symbol}`, { timeout: 120000 }),
+};
+
+export const gatesApi = {
+  getAnalytics: (days = 30) => api.get('/api/gates', { params: { days } }),
+};
+
+export const searchApi = {
+  global: (q, limit = 5) => api.get('/api/search', { params: { q, limit } }),
+};
+
+export const backtestApi = {
+  // Single setup replay — cached 30 days on server
+  setup: (data) => api.post('/api/backtest/setup', data, { timeout: 180000 }),
+  // Walk-forward across symbols/modes — can take 1-3 min
+  run: (data) => api.post('/api/backtest/run', data, { timeout: 300000 }),
+  // Per-signal flag edge analysis
+  signalEdge: (data) => api.post('/api/backtest/signal-edge', data, { timeout: 300000 }),
+  // Cached results list
+  results: (symbol) => api.get('/api/backtest/results', { params: symbol ? { symbol } : {} }),
+};
+
+export const exportApi = {
+  signalsUrl: (params = {}) => {
+    const clean = Object.fromEntries(
+      Object.entries(params).filter(([, v]) => v != null && v !== '' && v !== 'ALL' && v !== 0)
+    );
+    const q = new URLSearchParams(clean).toString();
+    return `/api/signals/export${q ? '?' + q : ''}`;
+  },
+  tradesUrl: () => '/api/trades/export',
 };
 
 export default api;

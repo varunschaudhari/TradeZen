@@ -31,6 +31,7 @@ import ohlcvRouter from './routes/ohlcv.js';
 import marketRouter from './routes/market.js';
 import quotesRouter from './routes/quotes.js';
 import stockRouter from './routes/stock.js';
+import stocksRouter from './routes/stocks.js';
 import universeRouter from './routes/universe.js';
 import healthRouter from './routes/health.js';
 import scannerRouter from './routes/scanner.js';
@@ -39,6 +40,9 @@ import testRouter from './routes/test.js';
 import marketSignalsRouter from './routes/marketSignals.js';
 import analysisRouter from './routes/analysis.js';
 import monitorRouter from './routes/monitor.js';
+import backtestRouter from './routes/backtest.js';
+import searchRouter from './routes/search.js';
+import gatesRouter from './routes/gates.js';
 
 dotenv.config();
 
@@ -67,6 +71,7 @@ app.use('/api/ohlcv', ohlcvRouter);
 app.use('/api/market', marketRouter);
 app.use('/api/quotes', quotesRouter);
 app.use('/api/stock', stockRouter);
+app.use('/api/stocks', stocksRouter);
 app.use('/api/universe', universeRouter);
 app.use('/api/health', healthRouter);
 app.use('/api/scanner', scannerRouter);
@@ -75,6 +80,9 @@ app.use('/api/test', testRouter);
 app.use('/api/market-signals', marketSignalsRouter);
 app.use('/api/analysis', analysisRouter);
 app.use('/api/monitor', monitorRouter);
+app.use('/api/backtest', backtestRouter);
+app.use('/api/search', searchRouter);
+app.use('/api/gates', gatesRouter);
 
 app.use(errorHandler);
 

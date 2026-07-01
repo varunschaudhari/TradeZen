@@ -17,6 +17,7 @@ import {
   GATES_REQUIRED_FOR_CLAUDE,
   MARKET_CLOSE_HOUR,
   MARKET_CLOSE_MINUTE,
+  MARKET_MODES,
   MARKET_OPEN_HOUR,
   MARKET_OPEN_MINUTE,
   MAX_CAPITAL_DEPLOYED_PCT,
@@ -33,7 +34,13 @@ import { buildClaudePrompt, callClaudeAPI } from '../services/claudeEngine.js';
 import { checkGate7 } from '../services/gateChecker.js';
 import { saveSignal } from '../services/signalManager.js';
 import { monitorOpenTrades, autoOpenPaperTrade } from '../services/tradeTracker.js';
-import { sendBuyAlert, sendWaitToBuyUpgrade, sendWatchlistPrep } from '../services/notifier.js';
+import {
+  sendBuyAlert,
+  sendBearModeAlert,
+  sendVixSpikeAlert,
+  sendWaitToBuyUpgrade,
+  sendWatchlistPrep,
+} from '../services/notifier.js';
 import { emitEvent, SOCKET_EVENTS } from '../socket/socketHandlers.js';
 import * as scanState from '../services/scanState.js';
 import { upsertStockStatuses } from '../services/stockMaster.js';
@@ -395,9 +402,44 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
     scanState.startScan({ scanType: forceRun ? 'MANUAL' : 'LIVE' });
 
     const health = await getMarketHealth();
+
+    // Bear-mode transition alert (only on first entry, not on every BEAR scan)
+    const prevMode = config.marketMode;
+    if (health.marketMode === MARKET_MODES.BEAR && prevMode !== MARKET_MODES.BEAR) {
+      emitEvent(SOCKET_EVENTS.MARKET_BEARMODE, {
+        marketMode: health.marketMode,
+        timestamp: new Date().toISOString(),
+      });
+      sendBearModeAlert().catch((e) =>
+        logger.error('sendBearModeAlert failed', { error: e.message })
+      );
+    }
+    if ((health.vix ?? 0) > 20) {
+      emitEvent(SOCKET_EVENTS.MARKET_VIXSPIKE, {
+        vix: health.vix,
+        timestamp: new Date().toISOString(),
+      });
+      sendVixSpikeAlert(health.vix).catch((e) =>
+        logger.error('sendVixSpikeAlert failed', { error: e.message })
+      );
+    }
+    // Persist market mode so the next scan can detect mode transitions
+    Config.updateOne({}, { $set: { marketMode: health.marketMode } }).catch(() => {});
+
+    // Emit flat shape so MarketStatusBar/MarketPulseStrip can read niftyPrice directly.
+    // health.nifty50.dayChangePct is % change; derive absolute change from price + pct.
+    const _n = health.nifty50 ?? {};
+    const _niftyChange = _n.price != null && _n.dayChangePct != null
+      ? round2(_n.price * _n.dayChangePct / (100 + _n.dayChangePct))
+      : null;
     emitEvent(SOCKET_EVENTS.MARKET_UPDATE, {
-      ...toMarketData(health),
-      marketMode: health.marketMode,
+      niftyPrice:     _n.price         ?? null,
+      niftyChange:    _niftyChange,
+      niftyChangePct: _n.dayChangePct   ?? null,
+      bankNiftyPrice: health.bankNifty?.price ?? null,
+      vix:            health.vix        ?? null,
+      adRatio:        health.adRatio    ?? null,
+      marketMode:     health.marketMode,
     });
 
     scanState.setPhase('discovery', health.marketMode);

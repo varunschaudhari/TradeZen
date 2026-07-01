@@ -4,56 +4,104 @@
 
 @layer base {
   body {
-    @apply bg-surface-base text-slate-100 font-sans antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, 'Inter', sans-serif;
+    @apply bg-surface-base text-slate-100 antialiased;
   }
-  * {
-    @apply border-slate-700;
-  }
-  /* Refined scrollbars — unobtrusive, on-brand */
-  ::-webkit-scrollbar { @apply w-2 h-2; }
+  * { @apply border-slate-700; }
+  ::-webkit-scrollbar { @apply w-1.5 h-1.5; }
   ::-webkit-scrollbar-track { @apply bg-transparent; }
-  ::-webkit-scrollbar-thumb { @apply bg-slate-700 rounded-full; }
-  ::-webkit-scrollbar-thumb:hover { @apply bg-slate-600; }
+  ::-webkit-scrollbar-thumb { background: rgba(100,116,139,0.5); @apply rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(100,116,139,0.8); }
 }
 
 @layer components {
+  /* ── Base card ──────────────────────────────────────────────── */
   .card {
-    @apply bg-surface-card rounded-xl border border-slate-700/70 p-4 shadow-tile;
+    @apply bg-surface-card rounded-xl border border-slate-700/60 p-4 shadow-tile;
   }
-  /* Card that responds to hover — for clickable signal cards, KPI tiles */
   .card-interactive {
     @apply transition-all duration-150 hover:border-slate-600 hover:bg-surface-hover/40 cursor-pointer;
   }
 
-  .badge-buy {
-    @apply bg-buy text-white text-xs font-bold px-2 py-0.5 rounded uppercase tracking-wide;
+  /* ── Direction-tinted KPI cards ─────────────────────────────── */
+  .card-bull {
+    background: linear-gradient(135deg, rgba(34,197,94,0.09) 0%, #1e293b 65%);
+    border-color: rgba(34,197,94,0.2);
   }
-  .badge-wait {
-    @apply bg-wait text-black text-xs font-bold px-2 py-0.5 rounded uppercase tracking-wide;
+  .card-bear {
+    background: linear-gradient(135deg, rgba(239,68,68,0.09) 0%, #1e293b 65%);
+    border-color: rgba(239,68,68,0.2);
   }
-  .badge-skip {
-    @apply bg-skip text-white text-xs font-bold px-2 py-0.5 rounded uppercase tracking-wide;
+  .card-wait {
+    background: linear-gradient(135deg, rgba(234,179,8,0.08) 0%, #1e293b 65%);
+    border-color: rgba(234,179,8,0.17);
+  }
+  .card-accent {
+    background: linear-gradient(135deg, rgba(59,130,246,0.08) 0%, #1e293b 65%);
+    border-color: rgba(59,130,246,0.17);
   }
 
-  /* Buttons */
-  .btn-primary {
-    @apply bg-accent hover:bg-accent-dark text-white font-medium px-4 py-2 rounded-lg transition-colors
-           disabled:opacity-50 disabled:cursor-not-allowed;
+  /* ── Verdict badges — gradient fill + ambient glow ─────────── */
+  .badge-buy {
+    @apply text-white text-xs font-bold px-2.5 py-0.5 rounded-md uppercase tracking-wide;
+    background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+    box-shadow: 0 0 10px rgba(34,197,94,0.32), inset 0 1px 0 rgba(255,255,255,0.12);
+    border: 1px solid rgba(134,239,172,0.22);
   }
+  .badge-wait {
+    @apply text-black text-xs font-bold px-2.5 py-0.5 rounded-md uppercase tracking-wide;
+    background: linear-gradient(135deg, #a16207 0%, #eab308 100%);
+    box-shadow: 0 0 10px rgba(234,179,8,0.26), inset 0 1px 0 rgba(255,255,255,0.14);
+    border: 1px solid rgba(253,224,71,0.28);
+  }
+  .badge-skip {
+    @apply text-white text-xs font-bold px-2.5 py-0.5 rounded-md uppercase tracking-wide;
+    background: linear-gradient(135deg, #b91c1c 0%, #ef4444 100%);
+    box-shadow: 0 0 10px rgba(239,68,68,0.24), inset 0 1px 0 rgba(255,255,255,0.08);
+    border: 1px solid rgba(252,165,165,0.2);
+  }
+
+  /* ── Buttons ─────────────────────────────────────────────────── */
+  .btn-primary {
+    @apply text-white font-semibold px-4 py-2 rounded-lg transition-all duration-150
+           disabled:opacity-50 disabled:cursor-not-allowed;
+    background: linear-gradient(135deg, #1d4ed8 0%, #3b82f6 60%, #60a5fa 100%);
+    box-shadow: 0 1px 0 rgba(255,255,255,0.12) inset, 0 3px 10px rgba(59,130,246,0.28);
+  }
+  .btn-primary:hover:not(:disabled) {
+    box-shadow: 0 1px 0 rgba(255,255,255,0.12) inset, 0 4px 14px rgba(59,130,246,0.44);
+    transform: translateY(-0.5px);
+  }
+  .btn-primary:active:not(:disabled) { transform: translateY(0); }
+
   .btn-danger {
     @apply bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 rounded-lg transition-colors;
   }
+
   .btn-ghost {
-    @apply bg-surface-elevated/70 hover:bg-surface-elevated text-slate-200 font-medium px-3 py-1.5
-           rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed
-           border border-slate-700/70;
+    @apply text-slate-200 font-medium px-3 py-1.5 rounded-lg transition-all duration-150
+           disabled:opacity-50 disabled:cursor-not-allowed;
+    background: rgba(255,255,255,0.042);
+    border: 1px solid rgba(255,255,255,0.09);
+    backdrop-filter: blur(4px);
   }
-  .btn-success {
-    @apply bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-3 py-1.5 rounded-lg
-           transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  .btn-ghost:hover:not(:disabled) {
+    background: rgba(255,255,255,0.08);
+    border-color: rgba(255,255,255,0.15);
   }
 
-  /* Segmented control / filter tabs */
+  .btn-success {
+    @apply text-white font-medium px-3 py-1.5 rounded-lg transition-all duration-150
+           disabled:opacity-50 disabled:cursor-not-allowed;
+    background: linear-gradient(135deg, #15803d 0%, #22c55e 100%);
+    box-shadow: 0 1px 0 rgba(255,255,255,0.1) inset, 0 3px 10px rgba(34,197,94,0.22);
+  }
+  .btn-success:hover:not(:disabled) {
+    box-shadow: 0 1px 0 rgba(255,255,255,0.1) inset, 0 4px 14px rgba(34,197,94,0.36);
+    transform: translateY(-0.5px);
+  }
+
+  /* ── Segmented control ───────────────────────────────────────── */
   .seg-group {
     @apply inline-flex items-center gap-1 bg-surface-card border border-slate-700/70 rounded-lg p-1;
   }
@@ -65,18 +113,99 @@
     @apply bg-surface-elevated text-slate-100 shadow-sm;
   }
 
-  /* Small status chip */
+  /* ── Chip ─────────────────────────────────────────────────────── */
   .chip {
     @apply inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold
            uppercase tracking-wide;
   }
 
+  /* ── Input ────────────────────────────────────────────────────── */
   .input {
     @apply bg-surface-elevated border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100
            placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-accent
            transition-colors w-full;
   }
-  select.input {
-    @apply cursor-pointer;
+  select.input { @apply cursor-pointer; }
+
+  /* ── Skeleton shimmer ─────────────────────────────────────────── */
+  .skeleton {
+    background: linear-gradient(90deg, #1e2d45 25%, #243858 50%, #1e2d45 75%);
+    background-size: 400% 100%;
+    animation: skeleton-shimmer 1.8s ease-in-out infinite;
+    border-radius: 5px;
+  }
+
+  /* ── Glassmorphism surface ───────────────────────────────────── */
+  .glass {
+    background: rgba(255,255,255,0.028);
+    backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,0.07);
+    box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 8px 32px rgba(0,0,0,0.22);
+  }
+}
+
+@layer utilities {
+  /* ── P&L glow utilities ──────────────────────────────────────── */
+  .glow-bull {
+    text-shadow: 0 0 16px rgba(74,222,128,0.52), 0 0 32px rgba(74,222,128,0.18);
+  }
+  .glow-bear {
+    text-shadow: 0 0 16px rgba(248,113,113,0.52), 0 0 32px rgba(248,113,113,0.18);
+  }
+  .glow-accent {
+    text-shadow: 0 0 14px rgba(96,165,250,0.42);
+  }
+}
+
+/* ── Keyframes ────────────────────────────────────────────────────── */
+@keyframes skeleton-shimmer {
+  0%   { background-position: -400% 0; }
+  100% { background-position:  400% 0; }
+}
+
+@keyframes stagger-in {
+  from { opacity: 0; transform: translateY(7px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Stagger grid — children animate in with cascading delays */
+.stagger-grid > * {
+  animation: stagger-in 0.28s ease-out both;
+}
+.stagger-grid > *:nth-child(1)    { animation-delay:   0ms; }
+.stagger-grid > *:nth-child(2)    { animation-delay:  55ms; }
+.stagger-grid > *:nth-child(3)    { animation-delay: 110ms; }
+.stagger-grid > *:nth-child(4)    { animation-delay: 165ms; }
+.stagger-grid > *:nth-child(5)    { animation-delay: 220ms; }
+.stagger-grid > *:nth-child(6)    { animation-delay: 275ms; }
+.stagger-grid > *:nth-child(7)    { animation-delay: 330ms; }
+.stagger-grid > *:nth-child(8)    { animation-delay: 385ms; }
+.stagger-grid > *:nth-child(9)    { animation-delay: 440ms; }
+.stagger-grid > *:nth-child(10)   { animation-delay: 495ms; }
+.stagger-grid > *:nth-child(n+11) { animation-delay: 550ms; }
+
+/* Bell ring — triggered by adding/removing .bell-ring class */
+@keyframes bell-ring {
+  0%   { transform: rotate(0);     }
+  12%  { transform: rotate(15deg); }
+  24%  { transform: rotate(-13deg);}
+  36%  { transform: rotate(10deg); }
+  48%  { transform: rotate(-8deg); }
+  60%  { transform: rotate(5deg);  }
+  72%  { transform: rotate(-3deg); }
+  84%  { transform: rotate(1.5deg);}
+  100% { transform: rotate(0);     }
+}
+.bell-ring svg {
+  animation: bell-ring 0.65s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+/* ── Respect user's reduced-motion preference ─────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

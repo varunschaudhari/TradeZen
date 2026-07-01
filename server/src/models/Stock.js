@@ -52,6 +52,15 @@ const stockSchema = new mongoose.Schema(
     lastSignalVerdict: String,
 
     inUniverse: { type: Boolean, default: true },
+
+    // Whether this stock participates in scan cycles (user-controlled toggle)
+    active: { type: Boolean, default: true, index: true },
+
+    // Index memberships, e.g. ['NIFTY50', 'NIFTY100', 'NIFTY500', 'MIDCAP150']
+    indices: { type: [String], default: [] },
+
+    // Broad market-cap tier for UI filtering
+    marketCapTier: { type: String, enum: ['LARGE', 'MID', 'SMALL', 'MICRO', ''], default: '' },
   },
   { timestamps: true, strict: true }
 );
@@ -59,5 +68,6 @@ const stockSchema = new mongoose.Schema(
 // Note: `sector` already has an index via `index: true` on the field above.
 stockSchema.index({ 'lastScan.compositeScore': -1 });
 stockSchema.index({ 'lastScan.at': -1 });
+stockSchema.index({ active: 1, sector: 1 });
 
 export default mongoose.model('Stock', stockSchema);

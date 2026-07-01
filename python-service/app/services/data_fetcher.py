@@ -8,7 +8,7 @@ Last Modified: 2026-06-13
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 import pandas as pd
@@ -218,3 +218,65 @@ def batch_fetch_latest_close(symbols: list[str]) -> dict[str, Optional[tuple[flo
     except Exception as exc:
         logger.error("batch_fetch_latest_close failed: %s", exc)
         return {}
+
+
+def batch_fetch_live_price(symbols: list[str]) -> dict[str, Optional[tuple[float, float]]]:
+    """
+    Fetch the current intraday price (≤5 min stale) and previous daily close for multiple symbols.
+
+    Uses 5-minute bars so the position monitor sees the actual live price, not yesterday's
+    daily close. This is what enables real-time T1/SL/T2 auto-detection during market hours.
+
+    Returns:
+        Dict mapping symbol -> (current_price, prev_daily_close) tuple.
+        current_price: latest 5-minute bar's close (live-ish).
+        prev_daily_close: last completed daily close (for day-change % display).
+    """
+    tickers = [f"{s}{NSE_SUFFIX}" for s in symbols]
+    try:
+        # 2 days of 5-minute bars: today's intraday + yesterday's bars for prev-close
+        raw = yf.download(
+            tickers,
+            period="2d",
+            interval="5m",
+            progress=False,
+            auto_adjust=True,
+            threads=True,
+            timeout=YFINANCE_TIMEOUT,
+        )
+        if raw is None or raw.empty:
+            logger.warning("batch_fetch_live_price: empty intraday response, falling back to daily")
+            return batch_fetch_latest_close(symbols)
+
+        close_df = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw
+        today = date.today()
+
+        result: dict[str, Optional[tuple[float, float]]] = {}
+        for sym, ticker in zip(symbols, tickers):
+            try:
+                col = ticker if ticker in close_df.columns else sym
+                series = close_df[col].dropna()
+                if series.empty:
+                    result[sym] = None
+                    continue
+
+                # Latest 5-minute close = live price
+                current = float(series.iloc[-1])
+
+                # Previous daily close: last bar whose date is before today
+                try:
+                    bar_dates = pd.DatetimeIndex(series.index).date
+                    prev_bars = series[[d < today for d in bar_dates]]
+                    prev = float(prev_bars.iloc[-1]) if not prev_bars.empty else None
+                except Exception:
+                    prev = None
+
+                result[sym] = (current, prev)
+            except Exception:
+                result[sym] = None
+
+        return result
+
+    except Exception as exc:
+        logger.error("batch_fetch_live_price failed: %s", exc)
+        return batch_fetch_latest_close(symbols)  # fall back to daily close
