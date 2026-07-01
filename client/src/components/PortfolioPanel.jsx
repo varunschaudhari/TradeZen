@@ -122,7 +122,7 @@ const RiskOmeter = ({ positions, capital }) => {
   return (
     <div className="flex flex-col items-center">
       <p className="text-[10px] uppercase tracking-widest text-slate-500 mb-0.5">Risk Exposure</p>
-      <svg width="120" height="70" viewBox="0 8 120 62" overflow="visible">
+      <svg width="120" height="74" viewBox="0 8 120 74">
         {/* Track */}
         <path d={track} fill="none" stroke="#1e293b" strokeWidth="10" strokeLinecap="round" />
         {/* Fill */}
@@ -135,9 +135,9 @@ const RiskOmeter = ({ positions, capital }) => {
         >
           {riskPct.toFixed(1)}%
         </text>
-        {/* Scale labels */}
-        <text x={lx - 4} y="78" textAnchor="end" fontSize="8" fill="#475569">0%</text>
-        <text x={rx + 4} y="78" textAnchor="start" fontSize="8" fill="#475569">{MAX_RISK_PCT}%</text>
+        {/* Scale labels — at y=76 so they stay inside the viewBox (8..82) */}
+        <text x={lx - 4} y="76" textAnchor="end" fontSize="8" fill="#475569">0%</text>
+        <text x={rx + 4} y="76" textAnchor="start" fontSize="8" fill="#475569">{MAX_RISK_PCT}%</text>
       </svg>
       <p className="text-[10px] -mt-1" style={{ color }}>{label} risk</p>
       <p className="text-[9px] text-slate-600">if all stops hit</p>
