@@ -43,6 +43,7 @@ import monitorRouter from './routes/monitor.js';
 import backtestRouter from './routes/backtest.js';
 import searchRouter from './routes/search.js';
 import gatesRouter from './routes/gates.js';
+import alertsRouter from './routes/alerts.js';
 
 dotenv.config();
 
@@ -83,6 +84,7 @@ app.use('/api/monitor', monitorRouter);
 app.use('/api/backtest', backtestRouter);
 app.use('/api/search', searchRouter);
 app.use('/api/gates', gatesRouter);
+app.use('/api/alerts', alertsRouter);
 
 app.use(errorHandler);
 

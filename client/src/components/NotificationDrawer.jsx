@@ -43,6 +43,7 @@ const NotifRow = ({ notif, meta }) => {
     if (notif.type === 'BUY_SIGNAL' && notif.data?.symbol) navigate(`/stock/${notif.data.symbol}`);
     else if (notif.type === 'SCAN_COMPLETE') navigate('/signals');
     else if (notif.type === 'SL_WARNING') navigate('/positions');
+    else if (notif.type === 'PRICE_ALERT' && notif.data?.symbol) navigate(`/stock/${notif.data.symbol}`);
   };
 
   return (

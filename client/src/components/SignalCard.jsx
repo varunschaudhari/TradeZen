@@ -58,7 +58,7 @@ const GateRow = ({ name, passed, reason, hint }) => (
 GateRow.propTypes = { name: PropTypes.string.isRequired, passed: PropTypes.bool.isRequired, reason: PropTypes.string, hint: PropTypes.string };
 GateRow.defaultProps = { reason: '' };
 
-const SignalCard = ({ signal, quote, onPreview, accuracy }) => {
+const SignalCard = ({ signal, quote, onPreview, accuracy, onLogTrade }) => {
   const [showGates, setShowGates] = useState(false);
   const style      = VERDICT_STYLES[signal.verdict] ?? VERDICT_STYLES.SKIP;
   const isBuy      = signal.verdict === 'BUY';
@@ -248,13 +248,25 @@ const SignalCard = ({ signal, quote, onPreview, accuracy }) => {
           )}
           <span className="text-slate-500">{timeAgo(signal.createdAt)}</span>
         </div>
-        <Link
-          to={`/analysis/${signal.symbol}`}
-          className="ml-auto px-2 py-1 rounded text-xs bg-surface-elevated hover:bg-accent/20 text-accent hover:text-accent transition-colors font-medium"
-          title="View comprehensive analysis report"
-        >
-          📊 Analyze
-        </Link>
+        <div className="flex items-center gap-1.5 ml-auto">
+          {isBuy && onLogTrade && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onLogTrade(signal); }}
+              title="Log this trade directly — no need to open the detail page"
+              className="px-2 py-1 rounded text-xs bg-emerald-900/60 hover:bg-emerald-800/70 text-emerald-400
+                border border-emerald-700/50 font-medium transition-colors"
+            >
+              + Log Trade
+            </button>
+          )}
+          <Link
+            to={`/analysis/${signal.symbol}`}
+            className="px-2 py-1 rounded text-xs bg-surface-elevated hover:bg-accent/20 text-accent hover:text-accent transition-colors font-medium"
+            title="View comprehensive analysis report"
+          >
+            📊 Analyze
+          </Link>
+        </div>
       </div>
     </div>
   );
@@ -285,7 +297,8 @@ SignalCard.propTypes = {
     price:     PropTypes.number,
     changePct: PropTypes.number,
   }),
-  onPreview: PropTypes.func,
+  onPreview:  PropTypes.func,
+  onLogTrade: PropTypes.func,
   accuracy: PropTypes.shape({
     wins:    PropTypes.number,
     losses:  PropTypes.number,
@@ -294,6 +307,6 @@ SignalCard.propTypes = {
   }),
 };
 
-SignalCard.defaultProps = { quote: null, onPreview: null, accuracy: null };
+SignalCard.defaultProps = { quote: null, onPreview: null, onLogTrade: null, accuracy: null };
 
 export default SignalCard;

@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { performanceApi, tradesApi } from '../services/api.js';
+import { performanceApi, tradesApi, watchlistApi } from '../services/api.js';
 import PerformanceChart from '../components/PerformanceChart.jsx';
 import { formatCurrency, formatPercent, formatDateTime } from '../utils/formatters.js';
 import { downloadCSV, fmtDateCSV } from '../utils/csvExport.js';
@@ -254,6 +254,8 @@ const EXIT_LABELS = {
   EARNINGS: 'Earnings',
 };
 
+const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+
 const Performance = () => {
   const [perf,          setPerf]          = useState(null);
   const [monthlyData,   setMonthlyData]   = useState([]);
@@ -261,18 +263,20 @@ const Performance = () => {
   const [benchmarkData, setBenchmarkData] = useState([]);
   const [closedTrades,  setClosedTrades]  = useState([]);
   const [sectorData,    setSectorData]    = useState(null);
+  const [watchlist,     setWatchlist]     = useState([]);
   const [loading,       setLoading]       = useState(true);
   const [error,         setError]         = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [perfRes, histRes, tradesRes, bmRes, sectorRes] = await Promise.all([
+      const [perfRes, histRes, tradesRes, bmRes, sectorRes, wlRes] = await Promise.all([
         performanceApi.get(),
         performanceApi.getHistory(),
         tradesApi.getAll(),
         performanceApi.getBenchmark().catch(() => null),
         tradesApi.getSectorConcentration().catch(() => null),
+        watchlistApi.get().catch(() => null),
       ]);
 
       setPerf(perfRes.data);
@@ -288,6 +292,7 @@ const Performance = () => {
       );
 
       setSectorData(sectorRes?.data ?? null);
+      setWatchlist(wlRes?.data ?? []);
 
       setError(null);
     } catch (err) {
@@ -328,6 +333,48 @@ const Performance = () => {
   }, [monthlyData, capitalData]);
 
   useEffect(() => { load(); }, [load]);
+
+  /* ── Win rate by sector ─────────────────────────────────────────────────── */
+  const sectorStats = useMemo(() => {
+    const sectorMap = Object.fromEntries(watchlist.map((w) => [w.symbol, w.sector ?? 'Unknown']));
+    const byS = {};
+    closedTrades.forEach((t) => {
+      const s = sectorMap[t.symbol] ?? 'Unknown';
+      if (!byS[s]) byS[s] = { wins: 0, losses: 0 };
+      if ((t.realizedPnl ?? 0) > 0) byS[s].wins++;
+      else byS[s].losses++;
+    });
+    return Object.entries(byS)
+      .map(([sector, { wins, losses }]) => ({
+        sector,
+        wins,
+        losses,
+        total: wins + losses,
+        winRate: wins / (wins + losses),
+      }))
+      .sort((a, b) => b.total - a.total);
+  }, [closedTrades, watchlist]);
+
+  /* ── Win rate by day of week ────────────────────────────────────────────── */
+  const dayStats = useMemo(() => {
+    const byD = {};
+    closedTrades.forEach((t) => {
+      if (!t.entryDate) return;
+      // entryDate is stored in UTC; NSE entries are 9:15–15:30 IST (3:45–10:00 UTC) → same UTC day as IST day
+      const d = new Date(t.entryDate).getUTCDay(); // 0=Sun ... 6=Sat
+      if (d === 0 || d === 6) return; // skip weekends
+      if (!byD[d]) byD[d] = { wins: 0, losses: 0 };
+      if ((t.realizedPnl ?? 0) > 0) byD[d].wins++;
+      else byD[d].losses++;
+    });
+    return [1, 2, 3, 4, 5].map((d) => ({
+      day: WEEKDAY_LABELS[d - 1],
+      wins:    byD[d]?.wins    ?? 0,
+      losses:  byD[d]?.losses  ?? 0,
+      total:   (byD[d]?.wins ?? 0) + (byD[d]?.losses ?? 0),
+      winRate: byD[d] ? byD[d].wins / (byD[d].wins + byD[d].losses) : null,
+    }));
+  }, [closedTrades]);
 
   if (loading) {
     return (
@@ -432,6 +479,75 @@ const Performance = () => {
 
       {sectorData?.sectors?.length > 0 && (
         <SectorDonut data={sectorData} />
+      )}
+
+      {/* Win rate breakdowns — only shown once there are enough closed trades */}
+      {closedTrades.length >= 3 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+          {/* By sector */}
+          {sectorStats.length > 0 && (
+            <div className="card">
+              <h3 className="text-sm font-semibold text-slate-300 mb-3">Win Rate by Sector</h3>
+              <div className="space-y-2.5">
+                {sectorStats.map(({ sector, wins, losses, total, winRate }) => (
+                  <div key={sector}>
+                    <div className="flex items-center justify-between text-xs mb-1">
+                      <span className="text-slate-300 font-medium truncate max-w-[140px]">{sector}</span>
+                      <span className="flex items-center gap-2 text-slate-500 shrink-0">
+                        <span className="font-mono text-slate-400">{wins}W / {losses}L</span>
+                        <span className={`font-semibold font-mono ${winRate >= 0.5 ? 'text-bull' : 'text-bear'}`}>
+                          {(winRate * 100).toFixed(0)}%
+                        </span>
+                      </span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-slate-700/60 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${winRate >= 0.5 ? 'bg-bull' : 'bg-bear'}`}
+                        style={{ width: `${winRate * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* By day of week */}
+          <div className="card">
+            <h3 className="text-sm font-semibold text-slate-300 mb-3">Win Rate by Entry Day</h3>
+            <div className="space-y-2.5">
+              {dayStats.map(({ day, wins, losses, total, winRate }) => (
+                <div key={day}>
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="text-slate-300 font-medium w-8">{day}</span>
+                    <span className="flex items-center gap-2 text-slate-500 shrink-0">
+                      {total === 0 ? (
+                        <span className="text-slate-600 font-mono">no data</span>
+                      ) : (
+                        <>
+                          <span className="font-mono text-slate-400">{wins}W / {losses}L</span>
+                          <span className={`font-semibold font-mono ${winRate >= 0.5 ? 'text-bull' : 'text-bear'}`}>
+                            {(winRate * 100).toFixed(0)}%
+                          </span>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-slate-700/60 overflow-hidden">
+                    {total > 0 && (
+                      <div
+                        className={`h-full rounded-full transition-all ${winRate >= 0.5 ? 'bg-bull' : 'bg-bear'}`}
+                        style={{ width: `${(winRate ?? 0) * 100}%` }}
+                      />
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+        </div>
       )}
 
       {/* Trade history table */}

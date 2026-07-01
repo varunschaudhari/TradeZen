@@ -23,6 +23,7 @@ import {
   generateEveningSummary,
   generateWeeklyReport,
 } from '../services/reportGenerator.js';
+import { checkPriceAlerts } from '../services/alertChecker.js';
 import {
   sendMorningBrief,
   sendEveningSummary,
@@ -60,15 +61,15 @@ export const startScheduler = () => {
     job('main-scan', () => runFullScan())
   );
 
-  // JOB 12 — Live open-position monitor (every 2 min, market hours only). Lighter than
-  // the main scan: pulls /quotes for open-trade symbols and runs the SL/T1/T2 monitor so
-  // exits + alerts fire near-real-time instead of waiting for the 15-min scan.
+  // JOB 12 — Live open-position monitor + price alert check (every 2 min, market hours only).
   cron.schedule(
     '*/2 * * * *',
     job('position-monitor', async () => {
       if (!isMarketOpen()) return;
       const summary = await refreshOpenPositions();
       if (summary.checked) logger.info('Position monitor cycle', summary);
+      const alertsFired = await checkPriceAlerts();
+      if (alertsFired > 0) logger.info('Price alerts triggered', { count: alertsFired });
     })
   );
 

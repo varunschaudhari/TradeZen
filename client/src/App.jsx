@@ -30,6 +30,7 @@ import Settings from './pages/Settings.jsx';
 import RiskDashboard from './pages/RiskDashboard.jsx';
 import Backtest from './pages/Backtest.jsx';
 import GateAnalytics from './pages/GateAnalytics.jsx';
+import Alerts from './pages/Alerts.jsx';
 
 const App = () => (
   <AppProvider>
@@ -75,6 +76,7 @@ const App = () => (
             <Route path="/risk"         element={<ErrorBoundary label="Risk Dashboard"><RiskDashboard /></ErrorBoundary>} />
             <Route path="/backtest"     element={<ErrorBoundary label="Backtesting"><Backtest /></ErrorBoundary>} />
             <Route path="/gates"        element={<ErrorBoundary label="Gate Analytics"><GateAnalytics /></ErrorBoundary>} />
+            <Route path="/alerts"       element={<ErrorBoundary label="Alerts"><Alerts /></ErrorBoundary>} />
             <Route path="/settings"     element={<ErrorBoundary label="Settings"><Settings /></ErrorBoundary>} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>

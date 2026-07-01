@@ -61,10 +61,17 @@ const PositionTracker = ({ trade }) => {
             style={{ left: `${t1Pct}%` }}
           />
         )}
+        {/* T2 right-edge cap — visible even when fill hasn't reached T2 */}
+        {target2 && (
+          <div className="absolute top-0 right-0 h-full w-1 bg-bull" />
+        )}
       </div>
-      <div className="flex justify-between text-xs text-slate-500 font-mono">
+      <div className="flex justify-between text-xs font-mono">
         <span className="text-bear">{formatCurrency(stopLoss)}</span>
         <span className="text-slate-400">|{formatCurrency(entryPrice)}|</span>
+        {target2 && t1Pct != null && (
+          <span className="text-bull/60">{formatCurrency(target1)}</span>
+        )}
         <span className="text-bull">{formatCurrency(target2 ?? target1)}</span>
       </div>
     </div>

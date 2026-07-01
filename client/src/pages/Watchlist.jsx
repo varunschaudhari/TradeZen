@@ -16,7 +16,7 @@ import { formatCurrency, formatPercent, timeAgo } from '../utils/formatters.js';
 /* ── Constants ─────────────────────────────────────────────────────── */
 const SYMBOL_RE  = /^[A-Z]{1,20}$/;
 const FAV_KEY    = 'tradezen_wl_favorites';
-const SORTS      = ['Symbol A–Z', 'Sector', 'Last Signal', 'Recently Added'];
+const SORTS      = ['Symbol A–Z', 'Price ↑', 'Change %', 'Sector', 'Last Signal', 'Recently Added'];
 const NSE_SECTORS = [
   'Automobiles', 'Banking', 'Capital Goods', 'Chemicals', 'Consumer Goods',
   'Financial Services', 'FMCG', 'Healthcare', 'IT', 'Infrastructure',
@@ -173,7 +173,7 @@ const Watchlist = () => {
 
   /* Live quotes for all watchlist symbols */
   const symbols = useMemo(() => watchlist.map((w) => w.symbol), [watchlist]);
-  const { quotes } = useQuotes(symbols);
+  const { quotes, loading: quotesLoading, refreshedAt, refresh: refreshPrices } = useQuotes(symbols);
 
   /* ── Data loading ─────────────────────────────────────────────────── */
   const loadWatchlist = useCallback(async () => {
@@ -316,6 +316,16 @@ const Watchlist = () => {
       if (sortKey === 'Symbol A–Z') return a.symbol.localeCompare(b.symbol);
       if (sortKey === 'Sector') return (a.sector ?? '').localeCompare(b.sector ?? '');
       if (sortKey === 'Recently Added') return new Date(b.addedDate) - new Date(a.addedDate);
+      if (sortKey === 'Price ↑') {
+        const pa = quotes[a.symbol]?.price ?? -Infinity;
+        const pb = quotes[b.symbol]?.price ?? -Infinity;
+        return pb - pa;
+      }
+      if (sortKey === 'Change %') {
+        const ca = quotes[a.symbol]?.changePct ?? -Infinity;
+        const cb = quotes[b.symbol]?.changePct ?? -Infinity;
+        return cb - ca;
+      }
       if (sortKey === 'Last Signal') {
         const as = lastSignals[a.symbol], bs = lastSignals[b.symbol];
         if (!as && !bs) return 0;
@@ -327,7 +337,7 @@ const Watchlist = () => {
     });
 
     return list;
-  }, [watchlist, search, filterSector, sortKey, favorites, lastSignals]);
+  }, [watchlist, search, filterSector, sortKey, favorites, lastSignals, quotes]);
 
   /* ── Stats ────────────────────────────────────────────────────────── */
   const stats = useMemo(() => {
@@ -370,13 +380,36 @@ const Watchlist = () => {
             {stats.total} stock{stats.total !== 1 ? 's' : ''} · scanner checks these every 15 min during market hours
           </p>
         </div>
-        <button
-          onClick={handleScanAll}
-          disabled={scanning || watchlist.length === 0}
-          className="btn-success flex items-center gap-1.5"
-        >
-          ⚡ {scanning ? 'Queuing scan…' : `Scan All (${stats.total})`}
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Price freshness indicator */}
+          {symbols.length > 0 && (
+            <button
+              onClick={refreshPrices}
+              disabled={quotesLoading}
+              title="Refresh live prices now"
+              className={`text-xs px-2.5 py-1.5 rounded-lg border transition-colors font-mono ${
+                quotesLoading
+                  ? 'border-slate-700 text-slate-600 cursor-wait'
+                  : refreshedAt
+                    ? 'border-slate-700 text-slate-500 hover:text-slate-300 hover:border-slate-500'
+                    : 'border-amber-700/50 text-amber-500 hover:border-amber-500'
+              }`}
+            >
+              {quotesLoading
+                ? '⟳ Loading prices…'
+                : refreshedAt
+                  ? `⟳ ${timeAgo(refreshedAt.toISOString())}`
+                  : '⟳ Load prices'}
+            </button>
+          )}
+          <button
+            onClick={handleScanAll}
+            disabled={scanning || watchlist.length === 0}
+            className="btn-success flex items-center gap-1.5"
+          >
+            ⚡ {scanning ? 'Queuing scan…' : `Scan All (${stats.total})`}
+          </button>
+        </div>
       </header>
 
       {/* ── Stats strip ────────────────────────────────────────────── */}
@@ -551,7 +584,12 @@ const Watchlist = () => {
 
                   {/* Live price */}
                   <div className="hidden sm:block">
-                    {q ? (
+                    {quotesLoading && !refreshedAt ? (
+                      <div className="space-y-1.5 pt-0.5">
+                        <div className="h-3.5 w-16 bg-slate-700/60 rounded animate-pulse" />
+                        <div className="h-2.5 w-10 bg-slate-700/40 rounded animate-pulse" />
+                      </div>
+                    ) : q?.price != null ? (
                       <>
                         <p className="font-mono text-sm font-semibold text-slate-100 tabular-nums">
                           {formatCurrency(q.price, 0)}

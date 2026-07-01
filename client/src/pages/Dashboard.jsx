@@ -225,6 +225,7 @@ const Dashboard = () => {
   const [universe,      setUniverse]      = useState([]);
   const [search,        setSearch]        = useState('');
   const [previewSymbol, setPreviewSymbol] = useState(null);
+  const [, setTick]     = useState(0); // forces re-render every 60s so scan badge stays current
 
   /* ── Data loads ─────────────────────────────────────────────────── */
   const loadPerf = useCallback(async () => {
@@ -264,6 +265,12 @@ const Dashboard = () => {
     universeApi.get()
       .then((r) => setUniverse(r?.data?.symbols ?? r?.symbols ?? []))
       .catch(() => {});
+  }, []);
+
+  /* Keep the scan badge text fresh — re-render every 60s */
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
   }, []);
 
   /* ── Socket events ─────────────────────────────────────────────── */
@@ -335,12 +342,7 @@ const Dashboard = () => {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-100 tracking-tight">Command Center</h1>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Paper portfolio ·{' '}
-            <span className="text-slate-400">
-              last scan {lastScanTime ? timeAgo(lastScanTime.toISOString()) : '—'}
-            </span>
-          </p>
+          <p className="text-xs text-slate-500 mt-0.5">Paper portfolio · NSE swing signals</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <StockSearch value={search} onChange={setSearch} universe={universe} onPick={openStock} />
@@ -351,6 +353,15 @@ const Dashboard = () => {
           >
             ↺ Refresh
           </button>
+          {/* Scan time badge — prominently grouped with the Scan Now action */}
+          {lastScanTime && (
+            <span
+              title="Time of the last completed scanner run"
+              className="text-xs font-mono text-slate-400 bg-surface-card border border-slate-700/60 rounded-md px-2.5 py-1.5 whitespace-nowrap"
+            >
+              ⏱ {timeAgo(lastScanTime.toISOString())}
+            </span>
+          )}
           <button
             onClick={handleManualScan}
             disabled={scanning}

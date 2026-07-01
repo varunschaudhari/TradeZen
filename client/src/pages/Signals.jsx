@@ -8,6 +8,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import SignalCard from '../components/SignalCard.jsx';
+import LogTradeModal from '../components/LogTradeModal.jsx';
 import useSocket from '../hooks/useSocket.js';
 import { signalsApi, tradesApi, exportApi } from '../services/api.js';
 import { SOCKET_EVENTS, VERDICTS } from '../utils/constants.js';
@@ -44,6 +45,7 @@ const Signals = () => {
   const [scanning,     setScanning]     = useState(false);
   const [lastScan,     setLastScan]     = useState(null);
   const [accuracy,     setAccuracy]     = useState({});
+  const [logPrefill,   setLogPrefill]   = useState(null);
   const { subscribe } = useSocket();
 
   useEffect(() => {
@@ -367,9 +369,19 @@ const Signals = () => {
               key={signal._id}
               signal={signal}
               accuracy={accuracy[signal.symbol] ?? null}
+              onLogTrade={signal.verdict === 'BUY' ? setLogPrefill : undefined}
             />
           ))}
         </div>
+      )}
+
+      {/* Log Trade modal — pre-filled from signal */}
+      {logPrefill && (
+        <LogTradeModal
+          prefill={logPrefill}
+          onClose={() => setLogPrefill(null)}
+          onSuccess={() => setLogPrefill(null)}
+        />
       )}
     </div>
   );

@@ -28,6 +28,7 @@ const TYPE_META = {
   BEAR_MODE:     { icon: '🐻', color: 'text-red-400'     },
   VIX_SPIKE:     { icon: '⚡', color: 'text-amber-400'   },
   SCAN_COMPLETE: { icon: '🔍', color: 'text-blue-400'    },
+  PRICE_ALERT:   { icon: '🎯', color: 'text-amber-400'   },
 };
 
 export const useNotifications = () => {
@@ -74,6 +75,16 @@ export const NotificationProvider = ({ children }) => {
         if ((d?.buySignals ?? 0) > 0) {
           push('SCAN_COMPLETE', `${d.buySignals} BUY signal${d.buySignals > 1 ? 's' : ''} found`, `${d.stocksScanned} stocks scanned`, d);
         }
+      }),
+      subscribe(SOCKET_EVENTS.PRICE_ALERT, (d) => {
+        const dir = d.direction === 'above' ? '▲' : '▼';
+        const fmt = (n) => `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+        push(
+          'PRICE_ALERT',
+          `Price Alert · ${d.symbol}`,
+          `${dir} Crossed ${fmt(d.targetPrice)} · Now ${fmt(d.currentPrice)}${d.note ? ` · ${d.note}` : ''}`,
+          d,
+        );
       }),
     ];
     return () => unsubs.forEach((u) => u?.());

@@ -3,12 +3,14 @@ import PropTypes from 'prop-types';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { formatCurrency } from '../utils/formatters.js';
+import LogTradeModal from './LogTradeModal.jsx';
 
 const MAX_SHOW = 5;
 
 const TodaySignals = ({ signals, onViewAll }) => {
   const navigate  = useNavigate();
-  const [copiedId, setCopiedId] = useState(null);
+  const [copiedId,       setCopiedId]       = useState(null);
+  const [logTradePrefill, setLogTradePrefill] = useState(null);
 
   const copyEntry = useCallback((e, s) => {
     e.stopPropagation();
@@ -118,17 +120,27 @@ const TodaySignals = ({ signals, onViewAll }) => {
                   </div>
                 </div>
 
-                {/* Arrow */}
-                <svg
-                  className="w-4 h-4 text-slate-600 group-hover:text-slate-400 flex-shrink-0 transition-colors"
-                  fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                {/* Log Trade button */}
+                <button
+                  onClick={(e) => { e.stopPropagation(); setLogTradePrefill(s); }}
+                  title="Log this trade without opening the detail page"
+                  className="shrink-0 text-[11px] px-2.5 py-1.5 rounded-lg font-semibold transition-colors
+                    bg-emerald-900/60 hover:bg-emerald-800/70 text-emerald-300 border border-emerald-700/50"
                 >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                </svg>
+                  + Log
+                </button>
               </div>
             );
           })}
         </div>
+      )}
+
+      {/* Log Trade modal — pre-filled from signal */}
+      {logTradePrefill && (
+        <LogTradeModal
+          prefill={logTradePrefill}
+          onClose={() => setLogTradePrefill(null)}
+        />
       )}
     </div>
   );

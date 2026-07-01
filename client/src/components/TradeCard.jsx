@@ -8,6 +8,37 @@ import PropTypes from 'prop-types';
 import { formatCurrency, formatPercent, formatDateTime } from '../utils/formatters.js';
 import PositionTracker from './PositionTracker.jsx';
 
+/* Tiny inline sparkline — 7 daily closes as a polyline, entry price as dashed baseline */
+const MiniSparkline = ({ closes, entryPrice }) => {
+  if (!closes || closes.length < 2) return null;
+  const W = 80, H = 32;
+  const allVals = entryPrice != null ? [...closes, entryPrice] : closes;
+  const minV = Math.min(...allVals);
+  const maxV = Math.max(...allVals);
+  const range = maxV - minV || 1;
+  const toX = (i) => ((i / (closes.length - 1)) * W).toFixed(1);
+  const toY = (v) => (H - ((v - minV) / range) * (H - 4) - 2).toFixed(1);
+  const pts = closes.map((c, i) => `${toX(i)},${toY(c)}`).join(' ');
+  const isUp = closes[closes.length - 1] >= closes[0];
+  const color = isUp ? '#22c55e' : '#ef4444';
+  const entryY = entryPrice != null ? toY(entryPrice) : null;
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block shrink-0 opacity-75">
+      {entryY != null && (
+        <line x1="0" y1={entryY} x2={W} y2={entryY}
+          stroke="#64748b" strokeWidth="0.75" strokeDasharray="2 2" />
+      )}
+      <polyline points={pts} fill="none" stroke={color}
+        strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <circle
+        cx={toX(closes.length - 1)}
+        cy={toY(closes[closes.length - 1])}
+        r="2" fill={color}
+      />
+    </svg>
+  );
+};
+
 const ACTION_STYLES = {
   HOLD:       { box: 'bg-slate-700/40 border-slate-600 text-slate-300',  label: 'Hold' },
   TRAIL_STOP: { box: 'bg-accent/10 border-accent/40 text-accent',        label: 'Trail stop' },
@@ -16,7 +47,7 @@ const ACTION_STYLES = {
   EXIT_RISK:  { box: 'bg-bear/10 border-bear/40 text-bear',              label: 'Exit risk' },
 };
 
-const TradeCard = ({ trade, onMarkT1Hit, onMarkClosed, onMarkSLHit, onTrailStop, onUpdateNotes, onQuickClose }) => {
+const TradeCard = ({ trade, sparklineCloses, onMarkT1Hit, onMarkClosed, onMarkSLHit, onTrailStop, onUpdateNotes, onQuickClose }) => {
   const [notesOpen,    setNotesOpen]    = useState(false);
   const [draftNotes,   setDraftNotes]   = useState(trade.notes ?? '');
   const [savingNotes,  setSavingNotes]  = useState(false);
@@ -26,6 +57,19 @@ const TradeCard = ({ trade, onMarkT1Hit, onMarkClosed, onMarkSLHit, onTrailStop,
   const live        = trade.live;
   const actionStyle = live ? (ACTION_STYLES[live.action] ?? ACTION_STYLES.HOLD) : null;
   const hasPrice    = trade.currentPrice != null && trade.currentPrice > 0;
+
+  const daysIn = trade.entryDate
+    ? Math.floor((Date.now() - new Date(trade.entryDate).getTime()) / 86_400_000)
+    : null;
+  const daysLabel = daysIn == null ? '' : daysIn === 0 ? 'today' : `${daysIn}d`;
+
+  /* Left-border accent reflects urgency: red = exit risk, green = book profit, blue = trail, neutral = hold */
+  const urgencyBorder =
+    live?.action === 'EXIT_RISK'                              ? 'border-l-4 border-l-bear' :
+    live?.action === 'BOOK_T1' || live?.action === 'BOOK_T2' ? 'border-l-4 border-l-bull' :
+    live?.action === 'TRAIL_STOP'                            ? 'border-l-4 border-l-blue-400' :
+    (trade.unrealizedPnl ?? 0) > 0                           ? 'border-l-2 border-l-emerald-700' :
+    '';
 
   const saveNotes = async () => {
     if (!onUpdateNotes) return;
@@ -39,24 +83,29 @@ const TradeCard = ({ trade, onMarkT1Hit, onMarkClosed, onMarkSLHit, onTrailStop,
   };
 
   return (
-    <div className="card border border-buy/20 bg-buy/5 space-y-3">
+    <div className={`card ${urgencyBorder} space-y-3`}>
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           <span className="font-mono font-bold text-lg">{trade.symbol}</span>
           {live && (
-            <span className={`text-[10px] px-1.5 py-0.5 rounded border ${actionStyle.box}`} title={live.reason}>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded border shrink-0 ${actionStyle.box}`} title={live.reason}>
               {actionStyle.label}
             </span>
           )}
         </div>
-        <div className="text-right">
-          <div className={`font-mono font-semibold ${pnlClass}`}>
-            {formatCurrency(trade.unrealizedPnl)}
-          </div>
-          <div className={`text-xs ${pnlClass}`}>
-            {formatPercent(trade.unrealizedPnlPct)}
-            {live && <span className="text-slate-500"> · {live.rMultiple}R</span>}
+        <div className="flex items-start gap-3 shrink-0">
+          {sparklineCloses?.length > 1 && (
+            <MiniSparkline closes={sparklineCloses} entryPrice={trade.entryPrice} />
+          )}
+          <div className="text-right">
+            <div className={`font-mono font-semibold ${pnlClass}`}>
+              {formatCurrency(trade.unrealizedPnl)}
+            </div>
+            <div className={`text-xs ${pnlClass}`}>
+              {formatPercent(trade.unrealizedPnlPct)}
+              {live && <span className="text-slate-500"> · {live.rMultiple}R</span>}
+            </div>
           </div>
         </div>
       </div>
@@ -126,8 +175,13 @@ const TradeCard = ({ trade, onMarkT1Hit, onMarkClosed, onMarkSLHit, onTrailStop,
         </div>
       </div>
 
-      <div className="text-xs text-slate-500">
-        Entered {formatDateTime(trade.entryDate)}
+      <div className="text-xs text-slate-500 flex items-center gap-1.5">
+        {daysLabel && (
+          <span className="font-mono text-slate-400 bg-slate-700/50 rounded px-1 py-px text-[10px] shrink-0">
+            {daysLabel}
+          </span>
+        )}
+        <span>Entered {formatDateTime(trade.entryDate)}</span>
       </div>
 
       {/* ── Notes section ─────────────────────────────────────────────── */}
@@ -192,19 +246,19 @@ const TradeCard = ({ trade, onMarkT1Hit, onMarkClosed, onMarkSLHit, onTrailStop,
         </div>
       )}
 
-      {/* ── Action buttons ─────────────────────────────────────────────── */}
-      <div className="flex gap-2 pt-1">
+      {/* ── Action buttons — 2-col grid on mobile, flex row on sm+ ──────── */}
+      <div className="grid grid-cols-2 sm:flex gap-2 pt-1">
         {!trade.target1Hit && (
           <button
             onClick={() => onMarkT1Hit(trade._id)}
-            className="flex-1 text-xs bg-bull/20 hover:bg-bull/30 text-bull border border-bull/30 rounded-lg py-1.5 transition-colors"
+            className="flex-1 text-xs bg-bull/20 hover:bg-bull/30 text-bull border border-bull/30 rounded-lg py-2.5 sm:py-1.5 transition-colors font-medium"
           >
             T1 Hit
           </button>
         )}
         <button
           onClick={() => onMarkSLHit(trade._id)}
-          className="flex-1 text-xs bg-bear/20 hover:bg-bear/30 text-bear border border-bear/30 rounded-lg py-1.5 transition-colors"
+          className="flex-1 text-xs bg-bear/20 hover:bg-bear/30 text-bear border border-bear/30 rounded-lg py-2.5 sm:py-1.5 transition-colors font-medium"
         >
           SL Hit
         </button>
@@ -213,14 +267,14 @@ const TradeCard = ({ trade, onMarkT1Hit, onMarkClosed, onMarkSLHit, onTrailStop,
             onClick={() => setPendingClose(true)}
             disabled={!hasPrice}
             title={hasPrice ? `Quick close at ${formatCurrency(trade.currentPrice)}` : 'No price available'}
-            className="flex-1 text-xs bg-emerald-900/40 hover:bg-emerald-800/50 text-emerald-400 border border-emerald-700/30 rounded-lg py-1.5 transition-colors disabled:opacity-40"
+            className="flex-1 text-xs bg-emerald-900/40 hover:bg-emerald-800/50 text-emerald-400 border border-emerald-700/30 rounded-lg py-2.5 sm:py-1.5 transition-colors disabled:opacity-40 font-medium"
           >
             ⚡ {hasPrice ? formatCurrency(trade.currentPrice, 0) : 'Quick'}
           </button>
         )}
         <button
           onClick={() => onMarkClosed(trade._id)}
-          className="flex-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg py-1.5 transition-colors"
+          className="flex-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg py-2.5 sm:py-1.5 transition-colors font-medium"
         >
           Close
         </button>
@@ -230,6 +284,7 @@ const TradeCard = ({ trade, onMarkT1Hit, onMarkClosed, onMarkSLHit, onTrailStop,
 };
 
 TradeCard.propTypes = {
+  sparklineCloses: PropTypes.arrayOf(PropTypes.number),
   trade: PropTypes.shape({
     _id:              PropTypes.string.isRequired,
     symbol:           PropTypes.string.isRequired,

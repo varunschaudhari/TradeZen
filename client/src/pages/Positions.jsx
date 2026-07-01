@@ -3,12 +3,12 @@
  * @description Open positions — live P&L, SL warnings, T1/close actions, log new trade.
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import toast from 'react-hot-toast';
 import TradeCard from '../components/TradeCard.jsx';
 import LogTradeModal from '../components/LogTradeModal.jsx';
 import useSocket from '../hooks/useSocket.js';
-import { tradesApi, quotesApi, pricesApi, exportApi } from '../services/api.js';
+import { tradesApi, quotesApi, pricesApi, exportApi, ohlcvApi } from '../services/api.js';
 import { SOCKET_EVENTS, EXIT_REASONS, MAX_OPEN_TRADES } from '../utils/constants.js';
 import { formatCurrency, formatPercent, timeAgo } from '../utils/formatters.js';
 
@@ -98,6 +98,7 @@ const Positions = () => {
   const [showLogModal,    setShowLogModal]     = useState(false);
   const [priceRefreshing, setPriceRefreshing]  = useState(false);
   const [monitoring,      setMonitoring]       = useState(false);
+  const [sparklines,      setSparklines]       = useState({});
   const { subscribe } = useSocket();
 
   /* Keep a stable ref to current trades for the price-refresh closure */
@@ -151,6 +152,31 @@ const Positions = () => {
 
   /* Auto-refresh after scan completes */
   useEffect(() => subscribe(SOCKET_EVENTS.SCAN_COMPLETE, () => loadTrades()), [subscribe, loadTrades]);
+
+  /* Sparkline data — 7-day daily closes per symbol, re-fetched only when symbol set changes */
+  const symbolKey = useMemo(() => trades.map((t) => t.symbol).sort().join(','), [trades]);
+  useEffect(() => {
+    if (!symbolKey) return;
+    let cancelled = false;
+    const syms = symbolKey.split(',').filter(Boolean);
+    Promise.all(
+      syms.map((sym) =>
+        ohlcvApi.get(sym, '10d', '1d')
+          .then((r) => {
+            const payload = r?.data;
+            const arr = Array.isArray(payload) ? payload : (payload?.data ?? []);
+            return { sym, closes: arr.slice(-7).map((c) => c.close).filter(Boolean) };
+          })
+          .catch(() => ({ sym, closes: [] }))
+      )
+    ).then((results) => {
+      if (cancelled) return;
+      const map = {};
+      for (const { sym, closes } of results) map[sym] = closes;
+      setSparklines(map);
+    });
+    return () => { cancelled = true; };
+  }, [symbolKey]);
 
   /* SL warning highlight */
   useEffect(() => {
@@ -417,6 +443,7 @@ const Positions = () => {
             >
               <TradeCard
                 trade={trade}
+                sparklineCloses={sparklines[trade.symbol]}
                 onMarkT1Hit={handleT1Hit}
                 onMarkClosed={handleCloseOpen}
                 onMarkSLHit={handleSLHit}

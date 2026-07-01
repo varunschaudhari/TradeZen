@@ -74,6 +74,13 @@ export const stockApi = {
   getDetail: (symbol) => api.get(`/api/stock/${symbol}`),
 };
 
+export const alertsApi = {
+  getAll:  ()     => api.get('/api/alerts'),
+  create:  (data) => api.post('/api/alerts', data),
+  toggle:  (id)   => api.patch(`/api/alerts/${id}/toggle`),
+  remove:  (id)   => api.delete(`/api/alerts/${id}`),
+};
+
 export const stocksApi = {
   getAll:      (params) => api.get('/api/stocks', { params }),
   getStats:    ()       => api.get('/api/stocks/stats'),
