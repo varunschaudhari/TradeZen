@@ -10,6 +10,7 @@
  */
 
 import Stock from '../models/Stock.js';
+import { NSE_EARNINGS_FRESH_DAYS } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 
 const clean = (obj) => {
@@ -82,7 +83,6 @@ export async function upsertStockDetail(detail, extra = {}) {
       low52w: detail.low52w,
       currentPrice: detail.currentPrice,
       weeklyTrend: detail.weeklyTrend,
-      earningsTimestamp: detail.earningsTimestamp,
       fundamentalsRefreshedAt: new Date(),
     });
     if (extra.compositeScore != null || extra.verdict != null) {
@@ -97,6 +97,28 @@ export async function upsertStockDetail(detail, extra = {}) {
       { $set: set, $setOnInsert: { symbol: detail.symbol, inUniverse: true } },
       { upsert: true }
     );
+    // yfinance earnings date goes in separately: it must never clobber a fresh NSE
+    // event-calendar date (earningsCalendar.js), and when it does write, the 'NSE'
+    // source label has to be cleared or getNseEarningsOverride would mislabel it.
+    if (detail.earningsTimestamp != null) {
+      const nseFreshCutoff = new Date(Date.now() - NSE_EARNINGS_FRESH_DAYS * 86_400_000);
+      await Stock.updateOne(
+        {
+          symbol: detail.symbol,
+          $or: [
+            { earningsSource: { $ne: 'NSE' } },
+            { earningsRefreshedAt: { $lt: nseFreshCutoff } },
+          ],
+        },
+        {
+          $set: {
+            earningsTimestamp: detail.earningsTimestamp,
+            earningsSource: '',
+            earningsRefreshedAt: new Date(),
+          },
+        }
+      );
+    }
     return true;
   } catch (err) {
     logger.error('upsertStockDetail failed', { symbol: detail.symbol, error: err.message });

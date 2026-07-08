@@ -308,6 +308,54 @@ export const fetchQuotes = async (symbols) => {
 };
 
 /**
+ * GET /intraday — batch latest-session 5m snapshots (opening range, VWAP, relative
+ * volume) for the ORB scanner. Returns {} on failure so the scan cycle degrades to
+ * a no-op instead of erroring.
+ *
+ * @param {string[]} symbols - NSE symbols without suffix
+ * @param {number} orMinutes - Opening-range window in minutes from the 9:15 open
+ * @returns {Promise<Record<string, object>>} Snapshots keyed by symbol (may carry .error)
+ */
+export const fetchIntradaySnapshots = async (symbols, orMinutes = 60) => {
+  if (!symbols?.length) return {};
+  try {
+    const response = await withRetry(() =>
+      pythonClient.get('/intraday', {
+        params: { symbols: symbols.join(','), orMinutes },
+        timeout: 60_000, // yfinance fetches per symbol server-side; the batch is slow
+      })
+    );
+    return response.data?.results ?? {};
+  } catch (err) {
+    logger.warn('Python /intraday failed — ORB cycle skipped', { error: axiosErrMsg(err) });
+    return {};
+  }
+};
+
+/**
+ * GET /intraday/bars — raw 5m bars (~5 sessions incl. today) for the ORB paper-trade
+ * replay at settlement. Returns {} on failure so settlement retries next session.
+ *
+ * @param {string[]} symbols - NSE symbols without suffix
+ * @returns {Promise<Record<string, { bars: object[], error: string|null }>>}
+ */
+export const fetchIntradayBars = async (symbols) => {
+  if (!symbols?.length) return {};
+  try {
+    const response = await withRetry(() =>
+      pythonClient.get('/intraday/bars', {
+        params: { symbols: symbols.join(',') },
+        timeout: 60_000,
+      })
+    );
+    return response.data?.results ?? {};
+  } catch (err) {
+    logger.warn('Python /intraday/bars failed — ORB settlement deferred', { error: axiosErrMsg(err) });
+    return {};
+  }
+};
+
+/**
  * GET /stock/:symbol — full on-demand analysis + fundamentals (P/E, market cap, sector)
  * for the dedicated stock detail page.
  *

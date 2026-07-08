@@ -13,6 +13,7 @@ import Trade from '../models/Trade.js';
 import ScanResult from '../models/ScanResult.js';
 import {
   DAILY_LOSS_PAUSE_PCT,
+  DEPLOYMENT_CAP_BY_MODE,
   EOD_PREP_MAX_CANDIDATES,
   GATES_REQUIRED_FOR_CLAUDE,
   MARKET_CLOSE_HOUR,
@@ -22,6 +23,8 @@ import {
   MARKET_OPEN_MINUTE,
   MAX_CAPITAL_DEPLOYED_PCT,
   MAX_OPEN_TRADES,
+  MAX_POSITIONS_PER_SECTOR,
+  MAX_SECTOR_DEPLOYED_PCT,
   NSE_HOLIDAYS,
   SCAN_CLAUDE_CONCURRENCY,
   VERDICTS,
@@ -32,6 +35,7 @@ import { getMarketSignals } from '../services/marketSignals.js';
 import { runStockDiscovery } from '../services/stockDiscovery.js';
 import { buildClaudePrompt, callClaudeAPI } from '../services/claudeEngine.js';
 import { checkGate7 } from '../services/gateChecker.js';
+import { recordBlockedTrade } from '../services/disciplineLedger.js';
 import { saveSignal } from '../services/signalManager.js';
 import { monitorOpenTrades, autoOpenPaperTrade } from '../services/tradeTracker.js';
 import {
@@ -114,13 +118,25 @@ export function computePositionSize(entry, stopLoss, capital, riskPct) {
 }
 
 /**
+ * Effective deployment ceiling (%) for a market mode: the regime tier, never above
+ * the absolute MAX_CAPITAL_DEPLOYED_PCT (pure).
+ * @param {string|null|undefined} marketMode - BULL | MIXED | CAUTION | BEAR
+ * @returns {number} Deployment cap in percent of capital
+ */
+export function deploymentCapPct(marketMode) {
+  const tier = DEPLOYMENT_CAP_BY_MODE[marketMode];
+  return Math.min(MAX_CAPITAL_DEPLOYED_PCT, tier ?? MAX_CAPITAL_DEPLOYED_PCT);
+}
+
+/**
  * Apply capital-protection rules: downgrade a BUY to WAIT when a guard trips (pure).
  * @param {string} verdict - Claude verdict
  * @param {string|null} waitCondition - Claude wait condition
- * @param {object} guards - { lossLimitHit, tradesAtMax, capitalExhausted }
+ * @param {object} guards - { lossLimitHit, tradesAtMax, capitalExhausted, deploymentCapPct, sectorFull }
+ * @param {string|null} [sector] - The candidate's sector (for the concentration cap)
  * @returns {{ verdict: string, waitCondition: string|null }}
  */
-export function effectiveVerdict(verdict, waitCondition, guards) {
+export function effectiveVerdict(verdict, waitCondition, guards, sector = null) {
   if (verdict !== VERDICTS.BUY) return { verdict, waitCondition };
   if (guards.lossLimitHit) {
     return {
@@ -137,18 +153,27 @@ export function effectiveVerdict(verdict, waitCondition, guards) {
   if (guards.capitalExhausted) {
     return {
       verdict: VERDICTS.WAIT,
-      waitCondition: `${MAX_CAPITAL_DEPLOYED_PCT}% capital deployed — no capacity`,
+      waitCondition: `${guards.deploymentCapPct ?? MAX_CAPITAL_DEPLOYED_PCT}% deployment cap reached (${guards.marketMode ?? 'regime'}-tier) — no capacity`,
     };
+  }
+  const sectorReason = sector ? guards.sectorFull?.[sector] : null;
+  if (sectorReason) {
+    return { verdict: VERDICTS.WAIT, waitCondition: sectorReason };
   }
   return { verdict: VERDICTS.BUY, waitCondition };
 }
 
 /**
  * Resolve capital-protection guard flags from open trades and today's closed losses.
+ * The deployment ceiling is regime-tiered (deploymentCapPct); sectorFull maps each
+ * sector already at its concentration cap (count or capital share) to a human reason.
  * @param {object} config - Config doc
- * @returns {Promise<{ lossLimitHit: boolean, tradesAtMax: boolean, capitalExhausted: boolean }>}
+ * @param {string|null} [marketMode] - Current market mode (regime tier for the cap)
+ * @returns {Promise<{ lossLimitHit: boolean, tradesAtMax: boolean, capitalExhausted: boolean,
+ *                     deploymentCapPct: number, marketMode: string|null,
+ *                     sectorFull: Record<string, string> }>}
  */
-async function resolveGuards(config) {
+async function resolveGuards(config, marketMode = null) {
   const todayStart = new Date();
   todayStart.setUTCHours(0, 0, 0, 0);
   const [openTrades, lossTrades] = await Promise.all([
@@ -161,10 +186,33 @@ async function resolveGuards(config) {
   ]);
   const totalDeployed = openTrades.reduce((s, t) => s + (t.capitalDeployed ?? 0), 0);
   const totalLoss = lossTrades.reduce((s, t) => s + (t.realizedPnl ?? 0), 0);
+  const capPct = deploymentCapPct(marketMode);
+
+  // Per-sector concentration: sectors already at the position or capital cap.
+  const sectorCapInr = config.capital * (MAX_SECTOR_DEPLOYED_PCT / 100);
+  const bySector = {};
+  for (const t of openTrades) {
+    if (!t.sector) continue; // unclassified trades can't be capped by sector
+    bySector[t.sector] = bySector[t.sector] ?? { count: 0, deployed: 0 };
+    bySector[t.sector].count += 1;
+    bySector[t.sector].deployed += t.capitalDeployed ?? 0;
+  }
+  const sectorFull = {};
+  for (const [sector, s] of Object.entries(bySector)) {
+    if (s.count >= MAX_POSITIONS_PER_SECTOR) {
+      sectorFull[sector] = `Sector cap: ${s.count} ${sector} positions open (max ${MAX_POSITIONS_PER_SECTOR})`;
+    } else if (s.deployed >= sectorCapInr) {
+      sectorFull[sector] = `Sector cap: ₹${Math.round(s.deployed).toLocaleString('en-IN')} deployed in ${sector} (max ${MAX_SECTOR_DEPLOYED_PCT}% of capital)`;
+    }
+  }
+
   return {
     lossLimitHit: totalLoss <= -(config.capital * (DAILY_LOSS_PAUSE_PCT / 100)),
     tradesAtMax: openTrades.length >= MAX_OPEN_TRADES,
-    capitalExhausted: totalDeployed >= config.capital * (MAX_CAPITAL_DEPLOYED_PCT / 100),
+    capitalExhausted: totalDeployed >= config.capital * (capPct / 100),
+    deploymentCapPct: capPct,
+    marketMode,
+    sectorFull,
   };
 }
 
@@ -208,8 +256,34 @@ async function processCandidate(candidate, marketData, config, guards, metrics, 
   const { verdict, waitCondition } = effectiveVerdict(
     claudeResult.verdict,
     claudeResult.waitCondition,
-    guards
+    guards,
+    stockData?.sector ?? null
   );
+
+  // Discipline ledger: a BUY the system refused is a measurable non-event. Two paths —
+  // Claude's own BUY was quality-downgraded inside parseClaudeResponse, or it survived
+  // as BUY and a capital/sector guard downgraded it here. Fire-and-forget.
+  const ledgerBase = {
+    symbol: stockData.symbol,
+    refPrice: stockData.currentPrice,
+    stopLoss: claudeResult.stopLoss ?? stockData.suggestedStopLoss ?? null,
+    sector: stockData.sector ?? null,
+    capital: config.capital,
+    riskPct: config.riskPercentage,
+  };
+  if (claudeResult.downgradedFrom === VERDICTS.BUY) {
+    recordBlockedTrade({
+      ...ledgerBase,
+      blockType: 'QUALITY_DOWNGRADE',
+      reason: claudeResult.downgradeReason ?? waitCondition,
+    }).catch(() => {});
+  } else if (claudeResult.verdict === VERDICTS.BUY && verdict !== VERDICTS.BUY) {
+    recordBlockedTrade({
+      ...ledgerBase,
+      blockType: waitCondition?.startsWith('Sector cap') ? 'SECTOR_CAP' : 'CAPITAL_GUARD',
+      reason: waitCondition,
+    }).catch(() => {});
+  }
 
   let position = { shares: 0, capitalDeployed: 0, maxLoss: 0, maxProfit: 0 };
   if (verdict === VERDICTS.BUY) {
@@ -474,7 +548,7 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
     marketData.topSectors = signals.topSectors;
     marketData.bottomSectors = signals.bottomSectors;
 
-    const guards = await resolveGuards(config);
+    const guards = await resolveGuards(config, health.marketMode);
     const watchlistSymbols = (config.watchlist ?? []).map((w) => w.symbol);
     // Drive the live progress bar through the (long) discovery phase: phase notes during
     // screening/analysis, then a per-stock tick as each survivor is scored through the gates.
@@ -493,6 +567,26 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
       ...(maxAnalyze ? { maxAnalyze } : {}),
     });
     metrics.stocksScanned = candidates.length;
+
+    // Discipline ledger: hard-blocked NEAR-candidates only (5+ gates passed, so they'd
+    // have reached Claude but for the hard block). Recording every rejection would
+    // inflate the ledger with trades nobody would have taken. Fire-and-forget; the
+    // per-session unique index absorbs the 15-minute scan repeats.
+    for (const e of evaluated ?? []) {
+      if (e.hardBlockFired && e.gatesPassed >= GATES_REQUIRED_FOR_CLAUDE && e.currentPrice > 0) {
+        recordBlockedTrade({
+          symbol: e.symbol,
+          blockType: 'HARD_BLOCK',
+          reason: e.hardBlockReason ?? 'Hard-block gate fired',
+          refPrice: e.currentPrice,
+          stopLoss: e.suggestedStopLoss ?? null,
+          sector: e.sector ?? null,
+          capital: config.capital,
+          riskPct: config.riskPercentage,
+        }).catch(() => {});
+      }
+    }
+
     // Claude runs on the top picks only — its own counted phase so the bar refills 0→100%.
     scanState.beginPhase('claude', candidates.length, `Running AI analysis on top ${candidates.length} pick(s)…`);
 

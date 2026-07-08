@@ -17,6 +17,7 @@ import Trade from '../models/Trade.js';
 import Stock from '../models/Stock.js';
 import Config from '../models/Config.js';
 import { validateBody } from '../middleware/validateRequest.js';
+import { netAfterCosts } from '../services/tradingCosts.js';
 import { sendTarget1Hit, sendTarget2Hit } from '../services/notifier.js';
 import { getLivePositions, refreshOpenPositions } from '../services/positionTracker.js';
 import { emitEvent, SOCKET_EVENTS } from '../socket/socketHandlers.js';
@@ -82,6 +83,22 @@ router.get('/', async (req, res, next) => {
       filter.status = req.query.status;
     }
     const trades = await Trade.find(filter).sort({ createdAt: -1 }).limit(50).lean();
+    // Closed trades that predate the cost fields get netted on the fly (not persisted)
+    // so every consumer sees gross AND net — the number that survives real charges.
+    for (const t of trades) {
+      if (
+        t.status === TRADE_STATUSES.CLOSED &&
+        t.netPnl == null &&
+        t.realizedPnl != null &&
+        t.exitPrice != null
+      ) {
+        const { netPnl, costs } = netAfterCosts(
+          t.realizedPnl, t.entryPrice, t.exitPrice, t.shares, 'DELIVERY'
+        );
+        t.netPnl = netPnl;
+        t.estCosts = costs.total;
+      }
+    }
     res.json({ success: true, data: trades, message: `${trades.length} trades retrieved` });
   } catch (err) {
     next(err);
@@ -141,7 +158,7 @@ router.get('/accuracy', async (_req, res, next) => {
           total:  { $sum: 1 },
         },
       },
-    ]).lean();
+    ]);
 
     const bySymbol = {};
     for (const r of results) {

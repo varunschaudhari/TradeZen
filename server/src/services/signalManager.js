@@ -79,22 +79,37 @@ export const buildSignalDoc = (input) => {
   const gate7 = input.gate7Result ?? { passed: false, reason: 'Pending Claude confidence check' };
   const gatesPassed = (gateResult?.gatesPassed ?? 0) + (gate7.passed ? 1 : 0);
 
+  // Resolve levels once (Claude's, falling back per-field to Python's suggestions), then
+  // compute riskReward from what is ACTUALLY stored — never from claudeResult.riskReward,
+  // which can describe a different mix of levels than the ones saved here.
+  const entryZone = claudeResult.entryZone ?? null;
+  const stopLoss = claudeResult.stopLoss ?? stockData?.suggestedStopLoss;
+  const target1 = claudeResult.target1 ?? stockData?.suggestedTarget1;
+  const target2 = claudeResult.target2 ?? stockData?.suggestedTarget2;
+  const entryRef = entryZone?.high;
+  const storedRisk = entryRef != null && stopLoss != null ? entryRef - stopLoss : null;
+  const riskReward =
+    storedRisk > 0 && target1 != null
+      ? Math.round(((target1 - entryRef) / storedRisk) * 100) / 100
+      : claudeResult.riskReward ?? null;
+
   return {
     symbol: stockData?.symbol,
+    sector: stockData?.sector ?? null,
     verdict,
     confidence: claudeResult.confidence,
     setupType: claudeResult.setupType ?? null,
     compositeScore: gateResult?.compositeScore ?? 0,
     compositeScoreAssessment: claudeResult.compositeScoreAssessment ?? null,
-    entryZone: claudeResult.entryZone ?? null,
+    entryZone,
     entryTrigger: claudeResult.entryTrigger ?? null,
-    stopLoss: claudeResult.stopLoss ?? stockData?.suggestedStopLoss,
+    stopLoss,
     stopLossReason: claudeResult.stopLossReason ?? null,
-    target1: claudeResult.target1 ?? stockData?.suggestedTarget1,
+    target1,
     target1Reason: claudeResult.target1Reason ?? null,
-    target2: claudeResult.target2 ?? stockData?.suggestedTarget2,
+    target2,
     target2Reason: claudeResult.target2Reason ?? null,
-    riskReward: claudeResult.riskReward,
+    riskReward,
     shares: position.shares,
     capitalDeployed: position.capitalDeployed,
     maxLoss: position.maxLoss,

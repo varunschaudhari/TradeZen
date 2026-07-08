@@ -112,6 +112,55 @@ class QuotesResponse(BaseModel):
     quotes: dict[str, Quote]
 
 
+class IntradaySnapshot(BaseModel):
+    """Latest-session 5m snapshot for one symbol (ORB scanner input)."""
+
+    sessionDate: Optional[str] = None  # YYYY-MM-DD of the session the snapshot covers
+    lastPrice: Optional[float] = None
+    lastBarTime: Optional[str] = None  # ISO timestamp of the last 5m bar (IST)
+    barsCount: Optional[int] = None
+    orHigh: Optional[float] = None
+    orLow: Optional[float] = None
+    orComplete: Optional[bool] = None
+    vwap: Optional[float] = None
+    cumVolume: Optional[float] = None
+    relVolume: Optional[float] = None  # time-of-day-adjusted vs prior sessions
+    dayHigh: Optional[float] = None
+    dayLow: Optional[float] = None
+    error: Optional[str] = None
+
+
+class IntradayResponse(BaseModel):
+    """Response body for GET /intraday — batch session snapshots keyed by symbol."""
+
+    results: dict[str, IntradaySnapshot]
+    orMinutes: int
+
+
+class IntradayBar(BaseModel):
+    """One 5m OHLCV bar (time = bar OPEN, ISO, IST)."""
+
+    time: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+class IntradayBarsEntry(BaseModel):
+    """Per-symbol bar list for GET /intraday/bars."""
+
+    bars: list[IntradayBar] = []
+    error: Optional[str] = None
+
+
+class IntradayBarsResponse(BaseModel):
+    """Response body for GET /intraday/bars — raw 5m bars keyed by symbol."""
+
+    results: dict[str, IntradayBarsEntry]
+
+
 class ScreenRequest(BaseModel):
     """Request body for POST /screen — universe pre-filtering (Step 2)."""
 

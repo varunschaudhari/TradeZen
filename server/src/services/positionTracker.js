@@ -12,7 +12,7 @@
  */
 
 import Trade from '../models/Trade.js';
-import { fetchQuotes } from './pythonBridge.js';
+import { getQuotes } from './quoteService.js';
 import { evaluateTrade, monitorOpenTrades } from './tradeTracker.js';
 import { SL_WARNING_PCT, TRADE_STATUSES } from '../config/constants.js';
 import { logger } from '../config/logger.js';
@@ -98,7 +98,7 @@ export async function getLivePositions() {
   if (!open.length) return { positions: [], summary: emptySummary() };
 
   const symbols = [...new Set(open.map((t) => t.symbol))];
-  const quotes = await fetchQuotes(symbols).catch(() => ({}));
+  const quotes = await getQuotes(symbols).catch(() => ({}));
 
   const positions = open.map((t) => {
     const q = quotes[t.symbol];
@@ -147,7 +147,7 @@ export async function refreshOpenPositions() {
   if (!open.length) return empty;
 
   const symbols = [...new Set(open.map((t) => t.symbol))];
-  const quotes = await fetchQuotes(symbols).catch(() => ({}));
+  const quotes = await getQuotes(symbols).catch(() => ({}));
   const priceMap = {};
   for (const s of symbols) {
     const p = quotes[s]?.price;

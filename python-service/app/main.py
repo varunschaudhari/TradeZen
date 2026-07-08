@@ -9,7 +9,7 @@ Last Modified: 2026-06-13
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import analyze, screen
+from app.routers import analyze, intraday, screen
 from app.config import LOG_LEVEL
 
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
@@ -29,6 +29,7 @@ app.add_middleware(
 )
 
 app.include_router(analyze.router)
+app.include_router(intraday.router)
 app.include_router(screen.router)
 
 

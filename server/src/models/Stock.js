@@ -43,6 +43,10 @@ const stockSchema = new mongoose.Schema(
     currentPrice: Number,
     weeklyTrend: String,
     earningsTimestamp: Number,
+    // Where earningsTimestamp came from: 'NSE' (event-calendar feed, authoritative) or
+    // unset (yfinance via Python /analyze). Gate 3 prefers a fresh NSE date.
+    earningsSource: { type: String, enum: ['NSE', ''], default: '' },
+    earningsRefreshedAt: Date,
 
     // Latest scan outcome (upserted every scan cycle)
     lastScan: { type: lastScanSchema, default: null },

@@ -48,6 +48,17 @@ export const RSI_MAX = 70;
 // floor (the screener already enforces turnover) without filtering out the better low-vol setups.
 export const VOLUME_RATIO_MIN = 1.0;
 export const RISK_REWARD_MIN = 2.0;
+// Exit management — enforced on Claude's FINAL levels (Claude's own riskReward arithmetic
+// is unreliable: ~30% of live signals stored an inflated R:R vs their saved levels).
+// T1_MIN_R: a BUY whose target1 is closer than 1.5× risk gets downgraded to WAIT.
+// ATR trail: after T1, the stop ratchets to hwm − ATR_TRAIL_MULT × ATR(14) (never below
+// entry). With ATR_TRAIL_REPLACES_T2 the runner is exited by the trail, not a fixed T2 —
+// fat right tails are where swing expectancy lives. Trades without atr14 keep the legacy
+// behavior (trail to entry at T1, hard T2 close).
+export const T1_MIN_R = 1.5;
+export const ATR_TRAIL_ENABLED = true;
+export const ATR_TRAIL_MULT = 2.75;
+export const ATR_TRAIL_REPLACES_T2 = true;
 export const EARNINGS_BUFFER_DAYS = 15;
 export const GATES_REQUIRED_FOR_CLAUDE = 5;
 export const SIMONS_OVERRIDE_THRESHOLD = 80; // Simons score ≥ 80 allows soft-gate override
@@ -62,6 +73,22 @@ export const MAX_CAPITAL_DEPLOYED_PCT = 95;
 export const DEFAULT_RISK_PCT = 0.4;
 export const DAILY_LOSS_PAUSE_PCT = 3;
 export const DEDUPLICATION_HOURS = 4;
+
+// Portfolio-level guards — the gates score one stock at a time and can't see
+// concentration (the book once sat 59% in financials). Checked when a BUY is saved
+// AND re-checked at auto-open. Sector caps use CAPITAL as the denominator: a
+// %-of-deployed rule misfires on a small book (the first position is always 100%).
+export const MAX_POSITIONS_PER_SECTOR = 3;
+export const MAX_SECTOR_DEPLOYED_PCT = 25;
+// Regime-tiered deployment ceiling (takes the MIN with MAX_CAPITAL_DEPLOYED_PCT).
+// 95% deployed in a CAUTION tape turns a 3% index dip into a full-book drawdown —
+// capacity should shrink as the regime degrades, not just per-trade size.
+export const DEPLOYMENT_CAP_BY_MODE = Object.freeze({
+  BULL: 80,
+  MIXED: 65,
+  CAUTION: 50,
+  BEAR: 20,
+});
 
 // Claude API cost control
 export const CLAUDE_MAX_TOKENS = 1500;
@@ -220,10 +247,60 @@ export const NEWS_SOURCE_TIMEOUT_MS = 8000; // per-source fetch timeout
 export const NEWS_AUTO_NEGATIVE_SCORE = -10; // score assigned on auto-negative block
 export const NEWS_SENTIMENT_POSITIVE_MIN = 5; // Claude-scale: score > 5 → POSITIVE
 export const NEWS_SENTIMENT_NEGATIVE_MAX = -1; // Claude-scale: score < -1 → NEGATIVE
-// Claude-based sentiment scoring is opt-in: news is fetched for every candidate, so a
-// per-stock Claude call would break the "Claude only when 5+ gates pass" cost model.
+// Claude-based sentiment scoring is ON by default (set NEWS_USE_CLAUDE_SENTIMENT=false
+// to fall back to keyword counting). It runs on Haiku (CLAUDE_SENTIMENT_MODEL), not the
+// main Sonnet model, and results are cached 4h per symbol — so the "Claude only when
+// 5+ gates pass" cost model for the expensive analysis calls is preserved.
 export const NEWS_USE_CLAUDE_SENTIMENT =
-  (process.env.NEWS_USE_CLAUDE_SENTIMENT ?? 'false') === 'true';
+  (process.env.NEWS_USE_CLAUDE_SENTIMENT ?? 'true') === 'true';
+
+// NSE earnings calendar feed (Gate 3 input — earningsCalendar.js)
+export const NSE_EARNINGS_TIMEOUT_MS = 10_000; // per-request timeout (handshake + calendar)
+export const NSE_EARNINGS_FRESH_DAYS = 7; // NSE date older than this → fall back to yfinance
+
+// Live quotes (Phase 3 — liveQuotes.js / quoteService.js). Near-real-time NSE LTP via
+// Yahoo's v8 chart API (measured lag 2–6s; NSE's own quote APIs are bot-blocked, and no
+// broker account is needed). Circuit-breaks to the yfinance path on repeat failures.
+export const LIVE_QUOTES_ENABLED = (process.env.LIVE_QUOTES_ENABLED ?? 'true') === 'true';
+export const LIVE_QUOTES_TIMEOUT_MS = 6_000; // per-quote request timeout
+export const LIVE_QUOTES_CACHE_MS = 15_000; // per-symbol LTP cache
+export const LIVE_QUOTES_FAILURE_THRESHOLD = 3; // consecutive failures → open breaker
+export const LIVE_QUOTES_FAILURE_BACKOFF_MS = 5 * 60_000; // breaker-open duration
+export const LIVE_QUOTES_MAX_SYMBOLS = 40; // per-cycle fetch cap (rate-limit safety)
+export const LIVE_QUOTES_CONCURRENCY = 4; // parallel quote fetches per cycle
+
+// Intraday entry-zone watcher (JOB 13 — entryWatcher.js). Alerts when an active BUY
+// signal's live price trades inside its entry zone; timing aid only, never an order.
+export const ENTRY_WATCH_INTERVAL_MINUTES = 5; // poll cadence during market hours
+export const ENTRY_WATCH_MAX_SIGNALS = 25; // cap on signals quoted per cycle
+
+// Intraday ORB scanner (Phase 1 intraday module — orbScanner.js). Opening-range
+// breakout on the EOD-prep shortlist only. Rules-only (no Claude per signal); alerts
+// are tagged EXPERIMENTAL and paper-tracked in IntradaySignal from day one.
+export const ORB_SCANNER_ENABLED = (process.env.ORB_SCANNER_ENABLED ?? 'true') === 'true';
+export const ORB_WINDOW_MINUTES = 60; // opening range = 9:15–10:15 IST
+export const ORB_SCAN_START_MINUTES = 10 * 60 + 15; // evaluate only after the OR completes
+export const ORB_SCAN_END_MINUTES = 14 * 60; // no fresh ORB alerts after 14:00 IST
+export const ORB_REL_VOLUME_MIN = 1.5; // time-adjusted relative volume gate
+export const ORB_BREAKOUT_BUFFER_PCT = 0.1; // close must clear OR high by this % (noise filter)
+export const ORB_MAX_SYMBOLS = 15; // shortlist cap per session
+// Live-quote pre-screen: skip the heavy 5m-snapshot fetch for symbols whose live price
+// sits below OR high by more than this % (they can't produce a surviving alert). The
+// tolerance keeps symbols within quote-jitter range of a breakout on the full check.
+export const ORB_PRESCREEN_TOLERANCE_PCT = 0.15;
+
+// ORB paper-trade container (Phase 2). Completely separate from the swing risk budget:
+// virtual capital, its own (smaller) risk %, and a hard 15:15 IST square-off. Exits are
+// settled by 5m bar replay (SL / target / square-off — whichever the bars hit first).
+export const ORB_PAPER_CAPITAL = 100_000; // virtual capital for paper position sizing
+export const ORB_PAPER_RISK_PCT = 0.5; // % of paper capital risked per signal
+export const ORB_SQUAREOFF_MINUTES = 15 * 60 + 10; // exit at the 15:10 IST bar's close (≤ 15:15)
+export const ORB_SETTLE_LOOKBACK_DAYS = 5; // settle missed sessions while 5m bars still exist
+
+// Discipline ledger (disciplineLedger.js) — records every trade the system blocked and
+// marks it to market later, so the value of the NOs is a measured number, both ways.
+export const LEDGER_EVAL_AFTER_DAYS = 7; // mark-to-market horizon (≈ 5 trading days)
+export const LEDGER_FLAT_BAND_PCT = 0.25; // |fwd return| below this → FLAT, not PROTECTED/COST
 
 // Market health thresholds (Flow 1 — marketHealthService.js)
 export const VIX_SAFE = 15; // BULL requires VIX below this

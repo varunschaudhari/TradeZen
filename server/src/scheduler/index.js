@@ -2,17 +2,22 @@
  * @file scheduler/index.js
  * @description Flow 11 — registers all 10 cron jobs. Times are IST; node-cron uses the
  *              server clock (UTC), so expressions are written in UTC (IST − 5:30).
- *              Jobs 4/5/7/8 depend on external data feeds (earnings, FII/DII, sector
- *              indices) not yet ingested — they are registered as documented placeholders
- *              so the schedule is complete and ready to wire when those sources exist.
+ *              Jobs 5/7/8 depend on external data feeds (FII/DII, sector indices) not
+ *              yet ingested — they are registered as documented placeholders so the
+ *              schedule is complete and ready to wire when those sources exist.
  * @author TradeZen Team
  * @created 2026-06-20
  * @lastModified 2026-06-20
  */
 
 import cron from 'node-cron';
+import { ENTRY_WATCH_INTERVAL_MINUTES } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 import { runFullScan, runEodPrep, isMarketOpen } from './scanPipeline.js';
+import { refreshEarningsCalendar } from '../services/earningsCalendar.js';
+import { watchEntryZones } from '../services/entryWatcher.js';
+import { runOrbScan, settlePaperTrades, remindSquareOff } from '../services/orbScanner.js';
+import { evaluateBlockedTrades } from '../services/disciplineLedger.js';
 import { refreshOpenPositions } from '../services/positionTracker.js';
 import { runStockDiscovery } from '../services/stockDiscovery.js';
 import { expireStaleSignals } from '../services/signalManager.js';
@@ -73,6 +78,64 @@ export const startScheduler = () => {
     })
   );
 
+  // JOB 13 — Intraday entry-zone watcher (every 5 min, market hours only). Alerts when
+  // an active BUY signal's live price enters its entry zone — timing aid, never an order.
+  cron.schedule(
+    `*/${ENTRY_WATCH_INTERVAL_MINUTES} * * * *`,
+    job('entry-watch', async () => {
+      if (!isMarketOpen()) return;
+      const summary = await watchEntryZones();
+      if (summary.triggered) logger.info('Entry watch cycle', summary);
+    })
+  );
+
+  // JOB 14 — Intraday ORB scanner (every 5 min, weekdays; the 10:15–14:00 IST window
+  // guard lives inside runOrbScan). EOD-prep shortlist only, rules-only, EXPERIMENTAL
+  // paper-tracked alerts — never an order, never a Trade doc.
+  cron.schedule(
+    '*/5 * * * 1-5',
+    job('orb-scan', async () => {
+      if (!isMarketOpen()) return;
+      const summary = await runOrbScan();
+      // Log real cycles (telemetry: prescreen savings + which condition rejected what)
+      if (summary.evaluated || summary.prescreened || summary.triggered) {
+        logger.info('ORB scan cycle', summary);
+      }
+    })
+  );
+
+  // JOB 15 — ORB paper-trade settlement (3:20 PM IST = 9:50 UTC, Mon–Fri): replays the
+  // session's 5m bars after each breakout to settle SL / target / square-off exits, so
+  // the experimental track record builds itself (also catches missed prior sessions).
+  cron.schedule(
+    '50 9 * * 1-5',
+    job('orb-settle', async () => {
+      const summary = await settlePaperTrades();
+      logger.info('ORB settlement done', summary);
+    })
+  );
+
+  // JOB 16 — ORB square-off reminder (3:00 PM IST = 9:30 UTC, Mon–Fri): nudge to close
+  // any manually mirrored intraday position by 15:15. Sends nothing when none are open.
+  cron.schedule(
+    '30 9 * * 1-5',
+    job('orb-squareoff-reminder', async () => {
+      const { open } = await remindSquareOff();
+      if (open) logger.info('ORB square-off reminder', { open });
+    })
+  );
+
+  // JOB 17 — Discipline ledger mark-to-market (3:45 PM IST = 10:15 UTC, Mon–Fri):
+  // prices every blocked trade whose horizon has passed, turning the system's NOs into
+  // a measured "capital protected" number (honest both ways — missed winners count).
+  cron.schedule(
+    '15 10 * * 1-5',
+    job('discipline-ledger-eval', async () => {
+      const summary = await evaluateBlockedTrades();
+      if (summary.evaluated) logger.info('Discipline ledger evaluation done', summary);
+    })
+  );
+
   // JOB 2 — Morning brief (8:30 AM IST = 3:00 UTC, Mon–Fri)
   cron.schedule(
     '0 3 * * 1-5',
@@ -90,13 +153,17 @@ export const startScheduler = () => {
     })
   );
 
-  // JOB 4 — Earnings calendar refresh (8:00 AM IST = 2:30 UTC, daily) — PLACEHOLDER
+  // JOB 4 — Earnings calendar refresh from NSE (8:00 AM IST = 2:30 UTC, daily)
   cron.schedule(
     '30 2 * * *',
     job('earnings-refresh', async () => {
-      logger.warn('earnings-refresh: external earnings feed not yet integrated — skipped');
+      const summary = await refreshEarningsCalendar();
+      logger.info('Earnings calendar refresh done', summary);
     })
   );
+  // Warm the NSE earnings data once at boot so Gate 3 has it right after a deploy/restart
+  // instead of waiting for the next 2:30 UTC run (never throws — no-op on failure).
+  refreshEarningsCalendar().catch(() => {});
 
   // JOB 5 — FII/DII data fetch (6:00 PM IST = 12:30 UTC, Mon–Fri) — PLACEHOLDER
   cron.schedule(
@@ -166,5 +233,5 @@ export const startScheduler = () => {
     })
   );
 
-  logger.info('Scheduler registered: 12 cron jobs (main scan every ' + interval + ' min, position monitor every 2 min)');
+  logger.info('Scheduler registered: 17 cron jobs (main scan every ' + interval + ' min, position monitor every 2 min, entry watch every ' + ENTRY_WATCH_INTERVAL_MINUTES + ' min, ORB scan every 5 min in window)');
 };

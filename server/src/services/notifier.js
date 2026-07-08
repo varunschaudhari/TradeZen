@@ -256,6 +256,113 @@ export const sendWaitToBuyUpgrade = async (signal) => {
   logger.info(`Upgrade alert sent for ${signal.symbol}`);
 };
 
+// ── 2b. Entry-zone hit (intraday watcher) ─────────────────────────────────────
+export const sendEntryZoneAlert = async (signal, price) => {
+  if (isDupe(`entryzone:${signal._id ?? signal.symbol}`)) return;
+
+  const tg = [
+    `🎯 *ENTRY ZONE HIT — ${signal.symbol}*`,
+    '',
+    `Live: ${fmtINR(price)} — inside entry zone ${fmtINR(signal.entryZone?.low)} – ${fmtINR(signal.entryZone?.high)}`,
+    `🛑 SL: ${fmtINR(signal.stopLoss)} | 🎯 T1: ${fmtINR(signal.target1)} | 🏆 T2: ${fmtINR(signal.target2)}`,
+    `⚖️ R:R: ${fmt(signal.riskReward)}:1 | 📦 Plan: ${signal.shares ?? '—'} shares ≈ ${fmtINR(signal.capitalDeployed)}`,
+    '',
+    signal.entryTrigger ? `⚡ Original trigger: ${signal.entryTrigger}` : null,
+    `⏰ Signal valid till: ${fmtDate(signal.signalValidTill)}`,
+    '',
+    '_You place the trade manually — TradeZen never auto-executes._',
+  ]
+    .filter((l) => l !== null)
+    .join('\n');
+
+  const html = htmlWrap(
+    `🎯 Entry Zone Hit — ${signal.symbol}`,
+    `
+    <table>
+      ${row('Live Price', fmtINR(price))}
+      ${row('Entry Zone', `${fmtINR(signal.entryZone?.low)} – ${fmtINR(signal.entryZone?.high)}`)}
+      ${row('Stop Loss', fmtINR(signal.stopLoss))}
+      ${row('Target 1', fmtINR(signal.target1))}
+      ${row('Target 2', fmtINR(signal.target2))}
+      ${row('Risk : Reward', `${fmt(signal.riskReward)}:1`)}
+      ${row('Planned Shares', signal.shares ?? '—')}
+      ${row('Valid Till', fmtDate(signal.signalValidTill))}
+    </table>
+    <p style="font-size:13px;color:#64748b">Original trigger: ${signal.entryTrigger ?? '—'}</p>
+  `
+  );
+
+  await Promise.all([
+    sendTelegram(tg),
+    sendEmail({ subject: `🎯 Entry zone hit: ${signal.symbol} @ ${fmtINR(price)}`, html }),
+  ]);
+  logger.info(`Entry-zone alert sent for ${signal.symbol}`);
+};
+
+// ── 2c. Intraday ORB breakout (EXPERIMENTAL — paper-tracked, not a trade call) ──
+export const sendOrbAlert = async (sig) => {
+  if (isDupe(`orb:${sig.symbol}:${sig.sessionDate}`)) return;
+
+  const tg = [
+    `⚡ *INTRADAY ORB — ${sig.symbol}* _(experimental)_`,
+    '',
+    `Broke above opening range high ${fmtINR(sig.orHigh)} (range ${fmtINR(sig.orLow)} – ${fmtINR(sig.orHigh)})`,
+    `Live: ${fmtINR(sig.breakoutPrice)} | VWAP: ${fmtINR(sig.vwap)} | Rel Vol: ${fmt(sig.relVolume, 1)}×`,
+    `🛑 Suggested SL: ${fmtINR(sig.suggestedStop)} | 🎯 Measured move: ${fmtINR(sig.suggestedTarget)}`,
+    sig.shares ? `📦 Paper plan: ${sig.shares} shares ≈ ${fmtINR(sig.capitalDeployed)} (virtual capital)` : null,
+    '',
+    '📊 _Paper-tracked only — this alert builds the ORB track record; it is not a trade call yet._',
+    '⏱ Data is ~15 min delayed (yfinance). Square off any intraday position by 15:15 IST.',
+    '_TradeZen never auto-executes._',
+  ].join('\n');
+
+  const html = htmlWrap(
+    `⚡ Intraday ORB — ${sig.symbol} (experimental)`,
+    `
+    <table>
+      ${row('Breakout Price', fmtINR(sig.breakoutPrice))}
+      ${row('Opening Range', `${fmtINR(sig.orLow)} – ${fmtINR(sig.orHigh)} (${sig.orWindowMinutes} min)`)}
+      ${row('VWAP', fmtINR(sig.vwap))}
+      ${row('Relative Volume', `${fmt(sig.relVolume, 1)}×`)}
+      ${row('Suggested SL', fmtINR(sig.suggestedStop))}
+      ${row('Measured-Move Target', fmtINR(sig.suggestedTarget))}
+      ${row('Session', sig.sessionDate)}
+    </table>
+    <p style="font-size:13px;color:#f59e0b">📊 Experimental — paper-tracked to build the ORB
+    track record. Not a trade call. Data ~15 min delayed; square off by 15:15 IST.</p>
+  `
+  );
+
+  await Promise.all([
+    sendTelegram(tg),
+    sendEmail({ subject: `⚡ ORB (experimental): ${sig.symbol} @ ${fmtINR(sig.breakoutPrice)}`, html }),
+  ]);
+  logger.info(`ORB alert sent for ${sig.symbol}`);
+};
+
+// ── 2d. ORB square-off reminder (15:00 IST — intraday positions close by 15:15) ─
+export const sendOrbSquareOffReminder = async (signals) => {
+  if (!signals?.length) return;
+  const sessionDate = signals[0].sessionDate;
+  if (isDupe(`orbsquareoff:${sessionDate}`)) return;
+
+  const lines = signals.map(
+    (s) => `• ${s.symbol} — entry ${fmtINR(s.breakoutPrice)}, SL ${fmtINR(s.suggestedStop)}`
+  );
+  const tg = [
+    `⏰ *ORB SQUARE-OFF REMINDER* _(15:15 IST)_`,
+    '',
+    `Today's ORB paper trade${signals.length > 1 ? 's' : ''}:`,
+    ...lines,
+    '',
+    '_If you mirrored any of these manually, square off by 15:15 IST — intraday positions_',
+    '_must not be carried overnight. Paper exits settle automatically at 15:20._',
+  ].join('\n');
+
+  await sendTelegram(tg);
+  logger.info(`ORB square-off reminder sent (${signals.length} open)`);
+};
+
 // ── 3. Stop loss warning ──────────────────────────────────────────────────────
 export const sendSlWarning = async (trade) => {
   if (isDupe(`sl:${trade._id}`)) return;
@@ -297,20 +404,21 @@ export const sendSlWarning = async (trade) => {
 export const sendTarget1Hit = async (trade) => {
   if (isDupe(`t1:${trade._id}`)) return;
 
+  const trailedTo = trade.slTrailed && trade.slTrailedTo != null ? trade.slTrailedTo : trade.entryPrice;
   const tg = [
     `🎯 *TARGET 1 HIT — ${trade.symbol}*`,
     '',
     `T1: ${fmtINR(trade.target1)} ✓`,
     `Unrealized P&L: ${fmtPct(trade.unrealizedPnlPct)}`,
     '',
-    `Consider trailing stop loss to entry (${fmtINR(trade.entryPrice)}).`,
+    `Stop loss trailed to ${fmtINR(trailedTo)} — ratchets up with an ATR trail from here.`,
     `_Next target: ${fmtINR(trade.target2)}_`,
   ].join('\n');
 
   await Promise.all([
     sendTelegram(tg),
     sendEmail({
-      subject: `🎯 T1 Hit: ${trade.symbol} — Consider trailing SL`,
+      subject: `🎯 T1 Hit: ${trade.symbol} — SL trailed to ${fmtINR(trailedTo)}`,
       html: htmlWrap(
         `🎯 Target 1 Hit — ${trade.symbol}`,
         `
@@ -318,9 +426,10 @@ export const sendTarget1Hit = async (trade) => {
           ${row('Target 1', `${fmtINR(trade.target1)} ✓`)}
           ${row('Target 2', fmtINR(trade.target2))}
           ${row('Entry', fmtINR(trade.entryPrice))}
+          ${row('SL trailed to', fmtINR(trailedTo))}
           ${row('Unrealized P&L', `<span class="buy">${fmtPct(trade.unrealizedPnlPct)}</span>`)}
         </table>
-        <p style="color:#22c55e;font-size:13px">Consider trailing stop loss to entry price to lock in profits.</p>
+        <p style="color:#22c55e;font-size:13px">Stop trailed to ${fmtINR(trailedTo)} and will ratchet up with the ATR trail as the price makes new highs.</p>
       `
       ),
     }),

@@ -194,7 +194,9 @@ export function scoreHeadlinesKeyword(headlines) {
  * @returns {Promise<{ sentiment: string, sentimentScore: number }>}
  */
 export async function scoreHeadlinesClaude(headlines, symbol) {
-  const model = process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
+  // Haiku, not the main CLAUDE_MODEL: sentiment runs on every candidate each scan
+  // (not behind the 5-gate cost guard), so it must be the cheapest tier.
+  const model = process.env.CLAUDE_SENTIMENT_MODEL ?? 'claude-haiku-4-5';
   const list = headlines.map((h, i) => `${i + 1}. ${h}`).join('\n');
   const prompt = `Rate each headline for ${symbol} stock on NSE from -10 (very negative) to +10 (very positive). Consider impact on the stock price specifically. Return ONLY JSON: {"scores":[numbers],"total":number,"sentiment":"POSITIVE"|"NEUTRAL"|"NEGATIVE"}\nHeadlines:\n${list}`;
   try {

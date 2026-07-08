@@ -61,6 +61,20 @@ export const performanceApi = {
   getBenchmark: ()            => api.get('/api/performance/benchmark'),
 };
 
+export const intradayApi = {
+  getStats:   (source)     => api.get('/api/intraday/stats', { params: source ? { source } : {} }),
+  getSignals: (limit = 50) => api.get('/api/intraday/signals', { params: { limit } }),
+  getGoLive:  ()           => api.get('/api/intraday/golive'),
+  getLive:    ()           => api.get('/api/intraday/live'),
+  logTrade:   (data)       => api.post('/api/intraday/trades', data),
+  closeTrade: (id, exitPrice) =>
+    api.patch(`/api/intraday/trades/${id}/close`, exitPrice != null ? { exitPrice } : {}),
+};
+
+export const disciplineApi = {
+  get: (limit = 30) => api.get('/api/discipline', { params: { limit } }),
+};
+
 export const marketApi = {
   get: () => api.get('/api/market'),
 };

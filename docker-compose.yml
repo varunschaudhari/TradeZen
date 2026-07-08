@@ -34,12 +34,9 @@ services:
     env_file:
       - ./server/.env
     environment:
-      # Use the local docker mongo container (overrides whatever is in server/.env)
-      MONGODB_URI: mongodb://mongo:27017/tradezen
+      # MongoDB Atlas — MONGODB_URI now comes from server/.env (no local override)
       PYTHON_SERVICE_URL: http://python-service:8001
     depends_on:
-      mongo:
-        condition: service_healthy
       python-service:
         condition: service_healthy
     volumes:

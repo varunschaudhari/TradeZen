@@ -24,6 +24,8 @@ const mkId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
 const TYPE_META = {
   BUY_SIGNAL:    { icon: '📈', color: 'text-emerald-400' },
+  ENTRY_TRIGGER: { icon: '🎯', color: 'text-emerald-400' },
+  INTRADAY_ORB:  { icon: '⚡', color: 'text-amber-400'   },
   SL_WARNING:    { icon: '⚠️', color: 'text-red-400'     },
   BEAR_MODE:     { icon: '🐻', color: 'text-red-400'     },
   VIX_SPIKE:     { icon: '⚡', color: 'text-amber-400'   },
@@ -61,6 +63,22 @@ export const NotificationProvider = ({ children }) => {
           : '';
         const rr = d.riskReward ? ` · RR ${d.riskReward.toFixed(1)}:1` : '';
         push('BUY_SIGNAL', `BUY · ${d.symbol}`, `${entry}${rr}`, d);
+      }),
+      subscribe(SOCKET_EVENTS.SIGNAL_ENTRY_TRIGGER, (d) => {
+        push(
+          'ENTRY_TRIGGER',
+          `Entry zone hit · ${d.symbol}`,
+          `Now ${fmt(d.price)} · Zone ${fmt(d.entryZone?.low)}–${fmt(d.entryZone?.high)}`,
+          d,
+        );
+      }),
+      subscribe(SOCKET_EVENTS.INTRADAY_ORB, (d) => {
+        push(
+          'INTRADAY_ORB',
+          `ORB breakout (exp) · ${d.symbol}`,
+          `Broke ${fmt(d.orHigh)} · Now ${fmt(d.price)} · Vol ${d.relVolume ?? '—'}× · paper-tracked`,
+          d,
+        );
       }),
       subscribe(SOCKET_EVENTS.TRADE_SL_WARNING, (d) => {
         push('SL_WARNING', `SL Warning · ${d.symbol}`, `Price is ${d.distancePct?.toFixed(1)}% from your stop loss`, d);

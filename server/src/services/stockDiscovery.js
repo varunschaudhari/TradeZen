@@ -34,6 +34,7 @@ import {
   screenUniverse,
 } from './pythonBridge.js';
 import { fetchNewsAndSentiment } from './newsFetcher.js';
+import { getNseEarningsOverride } from './earningsCalendar.js';
 import { calculateSimonsSignals, fetchSymbolHistory } from './simonsSignals.js';
 import { runAllGates } from './gateChecker.js';
 import { determineMarketMode } from './marketHealthService.js';
@@ -78,9 +79,10 @@ async function mapWithConcurrency(items, limit, fn) {
  */
 export async function enrichAndGate(stockData, marketData, niftyCloses) {
   const symbol = stockData.symbol;
-  const [newsData, history] = await Promise.all([
+  const [newsData, history, nseEarningsTs] = await Promise.all([
     fetchNewsAndSentiment(symbol),
     fetchSymbolHistory(symbol),
+    getNseEarningsOverride(symbol),
   ]);
   const simons = calculateSimonsSignals({
     indicators: stockData.indicators,
@@ -94,6 +96,8 @@ export async function enrichAndGate(stockData, marketData, niftyCloses) {
     external: {},
   });
   const enriched = { ...stockData, ...simons.enrichment };
+  // Gate 3 input: a fresh NSE event-calendar date is authoritative over yfinance's
+  if (nseEarningsTs != null) enriched.earningsTimestamp = nseEarningsTs;
   const gateResult = runAllGates(enriched, marketData, newsData);
   return { symbol, stockData: enriched, newsData, simons, gateResult };
 }
@@ -223,7 +227,9 @@ export const runStockDiscovery = async (opts = {}) => {
   const candidates = selectTopCandidates(gated, claudeCap);
   funnel.selected = candidates.length;
 
-  // Compact per-stock record of everything analyzed (for the scan snapshot/visibility)
+  // Compact per-stock record of everything analyzed (for the scan snapshot/visibility).
+  // hardBlockReason/stop/sector feed the discipline ledger for near-candidates.
+  const HARD_GATES = ['gate1', 'gate2', 'gate3', 'gate6', 'gate8'];
   const evaluated = gated.map((c) => ({
     symbol: c.symbol,
     currentPrice: c.stockData.currentPrice,
@@ -231,6 +237,12 @@ export const runStockDiscovery = async (opts = {}) => {
     compositeScore: c.gateResult.compositeScore,
     hardBlockFired: c.gateResult.hardBlockFired,
     shouldCallClaude: c.gateResult.shouldCallClaude,
+    hardBlockReason: c.gateResult.hardBlockFired
+      ? HARD_GATES.map((g) => c.gateResult.gateDetails?.[g]).find((d) => d && !d.passed)?.reason ??
+        'Hard-block gate fired'
+      : null,
+    suggestedStopLoss: c.stockData.suggestedStopLoss ?? null,
+    sector: c.stockData.sector ?? null,
   }));
 
   logger.info('Stock discovery complete', { funnel, marketMode: marketData?.marketMode });

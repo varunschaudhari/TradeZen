@@ -12,13 +12,20 @@
 
 import Trade from '../models/Trade.js';
 import Signal from '../models/Signal.js';
+import Stock from '../models/Stock.js';
 import {
+  ATR_TRAIL_ENABLED,
+  ATR_TRAIL_MULT,
+  ATR_TRAIL_REPLACES_T2,
   DEFAULT_RISK_PCT,
+  DEPLOYMENT_CAP_BY_MODE,
   EARNINGS_EXIT_REMINDER_DAYS,
   EXIT_REASONS,
   MAX_CAPITAL_DEPLOYED_PCT,
   MAX_OPEN_TRADES,
   MAX_PAPER_HOLD_DAYS,
+  MAX_POSITIONS_PER_SECTOR,
+  MAX_SECTOR_DEPLOYED_PCT,
   SL_WARNING_PCT,
   SL_WARNING_THROTTLE_MS,
   TRADE_STATUSES,
@@ -26,6 +33,7 @@ import {
 } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 import { analyzeStocks } from './pythonBridge.js';
+import { netAfterCosts } from './tradingCosts.js';
 import { sendEarningsReminder, sendSlWarning, sendTarget1Hit, sendTarget2Hit } from './notifier.js';
 import { emitEvent, SOCKET_EVENTS } from '../socket/socketHandlers.js';
 
@@ -59,19 +67,29 @@ export const buildTradeDoc = (data, signalId = null) => {
     target1Shares,
     target2Shares: shares - target1Shares,
     currentPrice: entryPrice,
+    atr14: data.atr14 != null && Number(data.atr14) > 0 ? Number(data.atr14) : null,
+    highWaterMark: entryPrice,
+    sector: data.sector ?? null,
     earningsTimestamp: data.earningsTimestamp ?? null,
     notes: data.notes ?? '',
   };
 };
 
+/** True when this trade rides the ATR trail after T1 (needs a positive entry-time ATR). */
+export const isAtrTrailActive = (trade) => ATR_TRAIL_ENABLED && trade?.atr14 > 0;
+
 /**
  * Evaluate an open trade against the current price (pure).
- * Uses the trailed stop (entry price) once Target 1 has been hit.
+ * Uses the trailed stop once Target 1 has been hit: with an entry-time ATR the stop
+ * ratchets to highWaterMark − ATR_TRAIL_MULT × atr14 (never below entry, never down);
+ * without one it stays at the legacy trail-to-entry level. When the ATR trail is riding
+ * and ATR_TRAIL_REPLACES_T2 is on, T2 no longer closes the position — the trail is the
+ * exit, so winners can run past the fixed target.
  *
  * @param {object} trade - Trade document/object
  * @param {number} price - Current price
  * @param {number} [nowMs] - Reference epoch ms
- * @returns {object} Decision: pnl, slHit, slWarning, t1Hit, t2Hit, earningsDue, …
+ * @returns {object} Decision: pnl, slHit, slWarning, t1Hit, t2Hit, highWaterMark, trailAdvanceTo, …
  */
 export const evaluateTrade = (trade, price, nowMs = Date.now()) => {
   const unrealizedPnl = round2((price - trade.entryPrice) * trade.shares);
@@ -85,7 +103,25 @@ export const evaluateTrade = (trade, price, nowMs = Date.now()) => {
   const slWarning =
     !slHit && slDistancePct != null && slDistancePct >= 0 && slDistancePct <= SL_WARNING_PCT;
   const t1Hit = !trade.target1Hit && trade.target1 != null && price >= trade.target1;
-  const t2Hit = trade.target1Hit && trade.target2 != null && price >= trade.target2;
+
+  // Track the high-water mark from entry (trail anchor; harmless pre-T1).
+  const highWaterMark = Math.max(trade.highWaterMark ?? trade.entryPrice, price);
+
+  // ATR trail (post-T1 only): propose a ratcheted stop; report it only when it advances.
+  const trailRiding = trade.target1Hit && isAtrTrailActive(trade);
+  let trailAdvanceTo = null;
+  if (trailRiding && !slHit) {
+    const proposed = round2(
+      Math.max(trade.entryPrice, highWaterMark - ATR_TRAIL_MULT * trade.atr14)
+    );
+    if (proposed > effectiveSl) trailAdvanceTo = proposed;
+  }
+
+  const t2Hit =
+    trade.target1Hit &&
+    trade.target2 != null &&
+    price >= trade.target2 &&
+    !(trailRiding && ATR_TRAIL_REPLACES_T2);
 
   let daysToEarnings = null;
   let earningsDue = false;
@@ -105,13 +141,17 @@ export const evaluateTrade = (trade, price, nowMs = Date.now()) => {
     slDistancePct,
     t1Hit,
     t2Hit,
+    highWaterMark,
+    trailAdvanceTo,
     earningsDue,
     daysToEarnings,
   };
 };
 
 /**
- * Fields to set when Target 1 is hit: book half (record price), trail SL to entry (pure).
+ * Fields to set when Target 1 is hit: book half (record price), trail the SL (pure).
+ * With an entry-time ATR the initial trail is max(entry, T1 price − ATR_TRAIL_MULT × atr14)
+ * — already above entry when the setup is tight; without one it trails to entry (legacy).
  *
  * @param {object} trade - Trade
  * @param {number} exitPrice - T1 fill price
@@ -123,7 +163,9 @@ export const computeTarget1Fields = (trade, exitPrice, now = new Date()) => ({
   target1HitDate: now,
   target1ExitPrice: exitPrice,
   slTrailed: true,
-  slTrailedTo: trade.entryPrice,
+  slTrailedTo: isAtrTrailActive(trade)
+    ? round2(Math.max(trade.entryPrice, exitPrice - ATR_TRAIL_MULT * trade.atr14))
+    : trade.entryPrice,
 });
 
 /**
@@ -139,6 +181,11 @@ export const computeCloseFields = (trade, exitPrice, exitReason, now = new Date(
   const realizedPnl = round2((exitPrice - trade.entryPrice) * trade.shares);
   const realizedPnlPct =
     trade.capitalDeployed > 0 ? round2((realizedPnl / trade.capitalDeployed) * 100) : 0;
+  // realizedPnl stays gross (continuity with the existing record); netPnl carries the
+  // cost-adjusted truth the go-live gate judges.
+  const { netPnl, costs } = netAfterCosts(
+    realizedPnl, trade.entryPrice, exitPrice, trade.shares, 'DELIVERY'
+  );
   return {
     status: TRADE_STATUSES.CLOSED,
     currentPrice: exitPrice,
@@ -146,6 +193,8 @@ export const computeCloseFields = (trade, exitPrice, exitReason, now = new Date(
     exitDate: now,
     realizedPnl,
     realizedPnlPct,
+    estCosts: costs.total,
+    netPnl,
     exitReason,
   };
 };
@@ -215,7 +264,9 @@ const openPaperTradeFromSignal = async (signal, config) => {
 
   // Re-check capital guards at open time (the signal passed them when created, but other
   // trades may have opened since).
-  const open = await Trade.find({ status: TRADE_STATUSES.OPEN }).select('capitalDeployed').lean();
+  const open = await Trade.find({ status: TRADE_STATUSES.OPEN })
+    .select('capitalDeployed sector')
+    .lean();
   if (open.length >= MAX_OPEN_TRADES) {
     logger.info(`Auto paper trade skipped (${MAX_OPEN_TRADES} open): ${symbol}`);
     return null;
@@ -223,9 +274,40 @@ const openPaperTradeFromSignal = async (signal, config) => {
   const capital = config.capital ?? 1_000_000;
   const deployed = open.reduce((s, t) => s + (t.capitalDeployed ?? 0), 0);
   const newDeploy = signal.capitalDeployed ?? shares * entryPrice;
-  if (deployed + newDeploy > capital * (MAX_CAPITAL_DEPLOYED_PCT / 100)) {
-    logger.info(`Auto paper trade skipped (capital cap): ${symbol}`);
+
+  // Regime-tiered deployment ceiling (mirrors resolveGuards; mode from signal creation).
+  const mode = signal.marketContext?.marketMode;
+  const capPct = Math.min(MAX_CAPITAL_DEPLOYED_PCT, DEPLOYMENT_CAP_BY_MODE[mode] ?? MAX_CAPITAL_DEPLOYED_PCT);
+  if (deployed + newDeploy > capital * (capPct / 100)) {
+    logger.info(`Auto paper trade skipped (${capPct}% deployment cap, ${mode ?? 'no'} mode): ${symbol}`);
     return null;
+  }
+
+  // Sector concentration cap: max positions AND max share of capital per sector.
+  // 'Unknown' from the stock master counts as unclassified (exempt, but logged).
+  let sector = signal.sector ?? null;
+  if (!sector) {
+    const stock = await Stock.findOne({ symbol }).select('sector').lean();
+    sector = stock?.sector ?? null;
+  }
+  if (sector === 'Unknown') sector = null;
+  if (sector) {
+    const inSector = open.filter((t) => t.sector === sector);
+    const sectorDeployed = inSector.reduce((s, t) => s + (t.capitalDeployed ?? 0), 0);
+    if (inSector.length >= MAX_POSITIONS_PER_SECTOR) {
+      logger.info(
+        `Auto paper trade skipped (sector cap ${inSector.length}/${MAX_POSITIONS_PER_SECTOR} ${sector}): ${symbol}`
+      );
+      return null;
+    }
+    if (sectorDeployed + newDeploy > capital * (MAX_SECTOR_DEPLOYED_PCT / 100)) {
+      logger.info(
+        `Auto paper trade skipped (${sector} at ₹${Math.round(sectorDeployed)} + ₹${Math.round(newDeploy)} > ${MAX_SECTOR_DEPLOYED_PCT}% of capital): ${symbol}`
+      );
+      return null;
+    }
+  } else {
+    logger.warn(`Auto paper trade for ${symbol} has no sector — exempt from sector cap`);
   }
 
   const trade = await logTrade({
@@ -236,6 +318,8 @@ const openPaperTradeFromSignal = async (signal, config) => {
     target1: signal.target1,
     target2: signal.target2,
     signalId: signal._id,
+    atr14: signal.indicators?.atr ?? null,
+    sector,
     earningsTimestamp: signal.earningsTimestamp ?? null,
     source: 'AUTO',
     notes: `Auto paper trade from BUY (score ${signal.compositeScore ?? signal.simonsScore ?? '?'}, ${signal.confidence ?? '?'} confidence).`,
@@ -262,7 +346,7 @@ export const markTarget1Hit = async (trade, exitPrice) => {
   await trade.save();
   emitEvent(SOCKET_EVENTS.TRADE_TARGET1, trade.toObject());
   sendTarget1Hit(trade).catch((e) => logger.error('sendTarget1Hit failed', { error: e.message }));
-  logger.info(`Target 1 hit: ${trade.symbol} @ ₹${exitPrice} — SL trailed to entry`);
+  logger.info(`Target 1 hit: ${trade.symbol} @ ₹${exitPrice} — SL trailed to ₹${trade.slTrailedTo}`);
   return trade;
 };
 
@@ -322,6 +406,7 @@ async function processTrade(trade, price, summary) {
   trade.currentPrice = price;
   trade.unrealizedPnl = decision.unrealizedPnl;
   trade.unrealizedPnlPct = decision.unrealizedPnlPct;
+  trade.highWaterMark = decision.highWaterMark;
 
   if (decision.slHit) {
     await closeTrade(trade, { exitPrice: price, exitReason: EXIT_REASONS.STOPLOSS });
@@ -352,6 +437,12 @@ async function processTrade(trade, price, summary) {
   if (decision.t1Hit) {
     await markTarget1Hit(trade, price);
     summary.t1 += 1;
+  } else if (decision.trailAdvanceTo != null) {
+    // Ratchet the ATR trail upward (post-T1). No alert — this is routine maintenance;
+    // the SL-warning / close paths speak when it matters.
+    trade.slTrailed = true;
+    trade.slTrailedTo = decision.trailAdvanceTo;
+    summary.trailAdvanced = (summary.trailAdvanced ?? 0) + 1;
   } else if (decision.slWarning && notThrottled(trade)) {
     trade.lastSlWarningAt = new Date();
     emitEvent(SOCKET_EVENTS.TRADE_SL_WARNING, {

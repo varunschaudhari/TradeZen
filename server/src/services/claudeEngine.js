@@ -20,11 +20,13 @@ import {
   CLAUDE_TEMPERATURE,
   CONFIDENCE_LEVELS,
   DEFAULT_RISK_PCT,
+  RISK_REWARD_MIN,
   RSI_MAX,
   RSI_MIN,
   SCORE_HIGH_CONFIDENCE,
   SCORE_MEDIUM_CONFIDENCE,
   SETUP_TYPES,
+  T1_MIN_R,
   VERDICTS,
 } from '../config/constants.js';
 import { logger } from '../config/logger.js';
@@ -206,7 +208,12 @@ RULES:
   would push riskReward < 2 (genuinely overextended, no room for a sensible stop). If a
   breakout entry still yields riskReward ≥ 2, prefer BUY over WAIT.
 - If in doubt, WAIT (give the condition) or SKIP (give the reason).
-- All prices ≥ 0.01, rounded to 2 dp. riskReward = (target1 − entryZone.high) / (entryZone.high − stopLoss).`;
+- All prices ≥ 0.01, rounded to 2 dp. riskReward = (target1 − entryZone.high) / (entryZone.high − stopLoss).
+- TARGET GEOMETRY (enforced in code — non-compliant BUYs are auto-downgraded to WAIT):
+  a BUY requires target1 ≥ entryZone.high + ${T1_MIN_R}× risk (risk = entryZone.high − stopLoss)
+  and target2 ≥ entryZone.high + ${RISK_REWARD_MIN}× risk. Do NOT anchor target1 to a nearby
+  minor resistance if that puts it closer than ${T1_MIN_R}R — pick the next meaningful level
+  or WAIT for a better entry.`;
 
 // ── Prompt builder ──────────────────────────────────────────────────────────────
 /**
@@ -307,7 +314,29 @@ export const parseClaudeResponse = (rawText) => {
 };
 
 /**
- * Apply defaults, coerce loose values, and enforce the BUY=HIGH rule.
+ * Recompute R:R from a response's own levels (pure). Claude's self-reported riskReward
+ * is LLM arithmetic — audited at ~30% materially wrong on live signals — so it is never
+ * trusted. Returns null components when the levels can't produce a valid geometry.
+ *
+ * @param {object} parsed - { entryZone, stopLoss, target1, target2 }
+ * @returns {{ rrT1: number|null, rrT2: number|null, risk: number|null }}
+ */
+export function computeRiskGeometry(parsed) {
+  const entry = parsed?.entryZone?.high;
+  const sl = parsed?.stopLoss;
+  if (typeof entry !== 'number' || typeof sl !== 'number' || entry - sl <= 0) {
+    return { rrT1: null, rrT2: null, risk: null };
+  }
+  const risk = entry - sl;
+  const rr = (t) =>
+    typeof t === 'number' ? Math.round(((t - entry) / risk) * 100) / 100 : null;
+  return { rrT1: rr(parsed.target1), rrT2: rr(parsed.target2), risk };
+}
+
+/**
+ * Apply defaults, coerce loose values, and enforce the BUY=HIGH rule plus the
+ * target-geometry floor (rr to T1 ≥ T1_MIN_R, rr to T2 ≥ RISK_REWARD_MIN) on
+ * Claude's FINAL levels — Gate 6 only ever validated Python's suggested levels.
  *
  * @param {object} parsed - Validated raw parsed object
  * @returns {object} Normalized response
@@ -328,8 +357,42 @@ function normalizeParsed(parsed) {
       confidence: parsed.confidence,
     });
     parsed.verdict = VERDICTS.WAIT;
+    // Discipline-ledger breadcrumb: the scan pipeline records downgraded BUYs.
+    parsed.downgradedFrom = VERDICTS.BUY;
+    parsed.downgradeReason = `BUY with ${parsed.confidence} confidence (HIGH required)`;
     parsed.waitCondition =
       parsed.waitCondition ?? 'Wait for a higher-confidence entry signal before committing capital';
+  }
+
+  // Overwrite Claude's self-reported riskReward with server-side arithmetic (R:R to T1),
+  // then enforce the geometry floor on BUYs.
+  const claimedRr = parsed.riskReward;
+  const { rrT1, rrT2 } = computeRiskGeometry(parsed);
+  if (rrT1 != null) parsed.riskReward = rrT1;
+
+  if (parsed.verdict === VERDICTS.BUY) {
+    let downgradeReason = null;
+    if (rrT1 == null) {
+      downgradeReason = 'incomplete or invalid trade levels (entry/stop/target1)';
+    } else if (rrT1 < T1_MIN_R) {
+      downgradeReason = `target1 too close: ${rrT1}R < ${T1_MIN_R}R minimum`;
+    } else if (rrT2 != null && rrT2 < RISK_REWARD_MIN) {
+      downgradeReason = `target2 R:R ${rrT2} below ${RISK_REWARD_MIN}:1 minimum`;
+    }
+    if (downgradeReason) {
+      logger.warn('BUY failed target-geometry floor — downgrading to WAIT', {
+        rrT1,
+        rrT2,
+        claimedRr,
+        reason: downgradeReason,
+      });
+      parsed.verdict = VERDICTS.WAIT;
+      parsed.downgradedFrom = VERDICTS.BUY;
+      parsed.downgradeReason = downgradeReason;
+      parsed.waitCondition =
+        parsed.waitCondition ??
+        `Setup geometry too tight (${downgradeReason}) — wait for a pullback entry or a cleaner level structure`;
+    }
   }
   return parsed;
 }

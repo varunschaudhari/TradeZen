@@ -66,6 +66,8 @@ export const SCAN_STAGE_STYLES = Object.freeze({
 export const SOCKET_EVENTS = Object.freeze({
   SIGNAL_NEW: 'signal:new',
   SIGNAL_UPDATE: 'signal:update',
+  SIGNAL_ENTRY_TRIGGER: 'signal:entry_trigger',
+  INTRADAY_ORB: 'intraday:orb',
   MARKET_UPDATE: 'market:update',
   TRADE_TARGET1: 'trade:target1',
   TRADE_TARGET2: 'trade:target2',

@@ -49,6 +49,7 @@ const marketContextSchema = new mongoose.Schema(
 const signalSchema = new mongoose.Schema(
   {
     symbol: { type: String, required: true, uppercase: true, index: true },
+    sector: { type: String, default: null },
     verdict: { type: String, enum: Object.values(VERDICTS), required: true, index: true },
     confidence: { type: String, enum: Object.values(CONFIDENCE_LEVELS) },
     setupType: { type: String, default: null },
@@ -103,6 +104,10 @@ const signalSchema = new mongoose.Schema(
     scanTimestamp: { type: Date, default: Date.now },
     isActive: { type: Boolean, default: true, index: true },
     notificationSent: { type: Boolean, default: false },
+    // Intraday entry-zone watcher (entryWatcher.js): one-shot alert when live price
+    // first trades inside entryZone during the signal's validity window
+    entryAlertSent: { type: Boolean, default: false },
+    entryTriggeredAt: { type: Date, default: null },
     claudeTokensUsed: { type: Number, default: 0 },
     claudeCostInr: { type: Number, default: 0 },
   },

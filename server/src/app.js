@@ -44,6 +44,8 @@ import backtestRouter from './routes/backtest.js';
 import searchRouter from './routes/search.js';
 import gatesRouter from './routes/gates.js';
 import alertsRouter from './routes/alerts.js';
+import intradayRouter from './routes/intraday.js';
+import disciplineRouter from './routes/discipline.js';
 
 dotenv.config();
 
@@ -85,6 +87,8 @@ app.use('/api/backtest', backtestRouter);
 app.use('/api/search', searchRouter);
 app.use('/api/gates', gatesRouter);
 app.use('/api/alerts', alertsRouter);
+app.use('/api/intraday', intradayRouter);
+app.use('/api/discipline', disciplineRouter);
 
 app.use(errorHandler);
 

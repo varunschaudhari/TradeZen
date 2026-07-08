@@ -12,6 +12,9 @@ import { TRADE_STATUSES, EXIT_REASONS } from '../config/constants.js';
 const tradeSchema = new mongoose.Schema(
   {
     symbol: { type: String, required: true, uppercase: true, index: true },
+    // Sector at open time (from the signal / stock master) — drives the per-sector
+    // concentration caps. Null = unclassified, exempt from the sector cap.
+    sector: { type: String, default: null },
     signalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Signal' },
     // MANUAL = user-logged; AUTO = auto-opened paper trade from a BUY signal. AUTO trades
     // are subject to the max-hold time exit; manual trades are never auto-closed on time.
@@ -39,11 +42,19 @@ const tradeSchema = new mongoose.Schema(
     target1ExitPrice: Number,
     exitPrice: Number,
     exitDate: Date,
-    realizedPnl: Number,
+    realizedPnl: Number, // gross: (exit − entry) × shares
     realizedPnlPct: Number,
+    // Cost realism (tradingCosts.js, DELIVERY mode): estimated charges + slippage and
+    // the net result. realizedPnl stays gross for continuity; the go-live gate judges net.
+    estCosts: Number,
+    netPnl: Number,
     exitReason: { type: String, enum: Object.values(EXIT_REASONS) },
     slTrailed: { type: Boolean, default: false },
     slTrailedTo: Number,
+    // ATR trailing exit (post-T1): entry-time ATR(14) + highest monitored price since
+    // entry. Trades without atr14 fall back to the legacy trail-to-entry behavior.
+    atr14: Number,
+    highWaterMark: Number,
     earningsTimestamp: Number,
     earningsAlertSent: { type: Boolean, default: false },
     lastSlWarningAt: Date,

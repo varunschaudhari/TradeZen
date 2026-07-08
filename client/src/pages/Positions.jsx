@@ -7,6 +7,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import toast from 'react-hot-toast';
 import TradeCard from '../components/TradeCard.jsx';
 import LogTradeModal from '../components/LogTradeModal.jsx';
+import IntradayPanel from '../components/IntradayPanel.jsx';
 import useSocket from '../hooks/useSocket.js';
 import { tradesApi, quotesApi, pricesApi, exportApi, ohlcvApi } from '../services/api.js';
 import { SOCKET_EVENTS, EXIT_REASONS, MAX_OPEN_TRADES } from '../utils/constants.js';
@@ -455,6 +456,9 @@ const Positions = () => {
           ))}
         </div>
       )}
+
+      {/* Intraday paper lane — strictly separate from the swing book above */}
+      <IntradayPanel />
 
       {/* Log Trade modal */}
       {showLogModal && (

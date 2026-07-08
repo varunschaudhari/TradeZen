@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { performanceApi, tradesApi, watchlistApi } from '../services/api.js';
+import { performanceApi, tradesApi, watchlistApi, intradayApi, disciplineApi } from '../services/api.js';
 import PerformanceChart from '../components/PerformanceChart.jsx';
 import { formatCurrency, formatPercent, formatDateTime } from '../utils/formatters.js';
 import { downloadCSV, fmtDateCSV } from '../utils/csvExport.js';
@@ -254,6 +254,276 @@ const EXIT_LABELS = {
   EARNINGS: 'Earnings',
 };
 
+/* ─── Discipline ledger ───────────────────────────────────────────────────── */
+const BLOCK_TYPE_LABELS = {
+  HARD_BLOCK: 'Hard block',
+  CAPITAL_GUARD: 'Capital guard',
+  SECTOR_CAP: 'Sector cap',
+  QUALITY_DOWNGRADE: 'Quality downgrade',
+};
+const LEDGER_VERDICT_META = {
+  PROTECTED: { label: 'Protected', cls: 'bg-bull/20 text-bull' },
+  COST:      { label: 'Missed win', cls: 'bg-bear/20 text-bear' },
+  FLAT:      { label: 'Flat', cls: 'bg-slate-700 text-slate-300' },
+};
+
+const DisciplineLedgerCard = ({ ledger }) => {
+  const summary = ledger?.summary;
+  if (!summary || summary.totalBlocked === 0) return null;
+  const recent = ledger?.recent ?? [];
+  const protectedNet = summary.netCapitalProtected ?? 0;
+
+  return (
+    <div className="card">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+        <h3 className="text-sm font-semibold text-slate-300">Discipline Ledger</h3>
+        <span className="text-[11px] text-slate-500">
+          Every blocked trade, marked to market after {summary.horizonDays} days — honest both ways
+        </span>
+      </div>
+      <p className="text-xs text-slate-500 mb-4">
+        The system&rsquo;s NOs, measured. &ldquo;Protected&rdquo; = the blocked trade went on to
+        lose; &ldquo;missed win&rdquo; = it went on to gain. The headline is the NET of both.
+      </p>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+        <StatCard
+          label="Net Capital Protected"
+          value={summary.evaluated > 0 ? formatCurrency(protectedNet) : '—'}
+          sub={summary.evaluated > 0 ? `across ${summary.evaluated} evaluated blocks` : 'awaiting first evaluations'}
+          color={protectedNet >= 0 ? 'text-emerald-400' : 'text-red-400'}
+        />
+        <StatCard
+          label="Trades Blocked"
+          value={summary.totalBlocked}
+          sub={`${summary.pending} pending evaluation`}
+        />
+        <StatCard
+          label="Protected / Missed"
+          value={`${summary.byVerdict?.PROTECTED ?? 0} / ${summary.byVerdict?.COST ?? 0}`}
+          sub={`${summary.byVerdict?.FLAT ?? 0} flat`}
+          color="text-blue-400"
+        />
+        <StatCard
+          label="Avg Fwd Return"
+          value={summary.avgFwdReturnPct != null ? formatPercent(summary.avgFwdReturnPct) : '—'}
+          sub="of blocked trades (lower = better blocks)"
+          color={(summary.avgFwdReturnPct ?? 0) <= 0 ? 'text-emerald-400' : 'text-amber-400'}
+        />
+      </div>
+
+      {recent.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs text-left">
+            <thead>
+              <tr className="text-slate-400 border-b border-slate-700">
+                <th className="pb-2 pr-4">Symbol</th>
+                <th className="pb-2 pr-4">Date</th>
+                <th className="pb-2 pr-4">Block</th>
+                <th className="pb-2 pr-4">Reason</th>
+                <th className="pb-2 pr-4">Fwd Return</th>
+                <th className="pb-2">Outcome</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recent.map((b) => {
+                const meta = LEDGER_VERDICT_META[b.verdict];
+                return (
+                  <tr key={b._id} className="border-b border-slate-800 hover:bg-slate-800/40">
+                    <td className="py-2 pr-4 font-mono font-semibold">{b.symbol}</td>
+                    <td className="py-2 pr-4 text-slate-500">{b.sessionDate}</td>
+                    <td className="py-2 pr-4 text-slate-400">{BLOCK_TYPE_LABELS[b.blockType] ?? b.blockType}</td>
+                    <td className="py-2 pr-4 text-slate-500 max-w-[280px] truncate" title={b.reason}>
+                      {b.reason ?? '—'}
+                    </td>
+                    <td className={`py-2 pr-4 font-mono ${
+                      b.fwdReturnPct == null ? 'text-slate-500' : b.fwdReturnPct <= 0 ? 'text-bull' : 'text-bear'
+                    }`}>
+                      {b.fwdReturnPct != null ? formatPercent(b.fwdReturnPct) : 'pending'}
+                    </td>
+                    <td className="py-2">
+                      {meta ? (
+                        <span className={`px-1.5 py-0.5 rounded text-xs ${meta.cls}`}>{meta.label}</span>
+                      ) : (
+                        <span className="text-slate-500">pending</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/* ─── Go-live gate ────────────────────────────────────────────────────────── */
+const GateLane = ({ title, lane }) => {
+  if (!lane) return null;
+  return (
+    <div className="flex-1 min-w-[260px]">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-xs font-semibold text-slate-300">{title}</span>
+        <span
+          className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+            lane.pass ? 'bg-bull/20 text-bull' : 'bg-bear/20 text-bear'
+          }`}
+        >
+          {lane.pass ? 'PASS' : 'NOT YET'}
+        </span>
+      </div>
+      <div className="space-y-1">
+        {lane.checks.map((c) => (
+          <div key={c.key} className="flex items-center justify-between text-xs">
+            <span className="flex items-center gap-1.5 text-slate-400">
+              <span className={c.pass ? 'text-bull' : 'text-bear'}>{c.pass ? '✓' : '✗'}</span>
+              {c.label}
+            </span>
+            <span className="font-mono text-slate-500">
+              <span className={c.pass ? 'text-slate-300' : 'text-bear'}>{c.actual ?? '—'}</span>
+              <span className="ml-1.5 text-slate-600">need {c.required}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const GoLiveGateCard = ({ gate }) => {
+  if (!gate) return null;
+  return (
+    <div className="card">
+      <h3 className="text-sm font-semibold text-slate-300 mb-1">Go-Live Gate</h3>
+      <p className="text-xs text-slate-500 mb-4">
+        Real money is justified only when a lane passes every check — all results judged
+        NET of estimated charges and slippage. Passing certifies the evidence is consistent
+        with a cost-surviving edge; it is still not a guarantee. Do not loosen a threshold
+        to make it pass.
+      </p>
+      <div className="flex flex-wrap gap-8">
+        <GateLane title="Swing (delivery)" lane={gate.swing} />
+        <GateLane title="Intraday ORB (experimental)" lane={gate.intraday} />
+      </div>
+    </div>
+  );
+};
+
+/* ─── Intraday ORB track record (experimental) ────────────────────────────── */
+const ORB_EXIT_META = {
+  TARGET:    { label: 'Target',     cls: 'bg-bull/20 text-bull' },
+  STOPLOSS:  { label: 'SL hit',     cls: 'bg-bear/20 text-bear' },
+  SQUAREOFF: { label: 'Square-off', cls: 'bg-slate-700 text-slate-300' },
+};
+
+const OrbTrackRecord = ({ stats, signals }) => {
+  if (!stats || stats.totalSignals === 0) return null;
+  const settled = stats.settled > 0;
+
+  return (
+    <div className="card border-l-4 border-l-wait">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+        <h3 className="text-sm font-semibold text-slate-300">
+          Intraday ORB — Track Record
+          <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-bold bg-wait/20 text-wait align-middle">
+            EXPERIMENTAL
+          </span>
+        </h3>
+        <span className="text-[11px] text-slate-500">
+          Paper only · virtual {formatCurrency(stats.paperCapital)} @ {stats.paperRiskPct}% risk · not a trade record
+        </span>
+      </div>
+      <p className="text-xs text-slate-500 mb-4">
+        Opening-range breakouts on the EOD shortlist, exits settled by 5-min bar replay
+        (SL / target / 15:15 square-off). This section exists to answer two questions before
+        the setup earns real alerts: is there an edge, and do alerts arrive fresh enough to act on?
+      </p>
+
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-4">
+        <StatCard label="Signals" value={stats.totalSignals} sub={`${stats.pending} pending`} />
+        <StatCard
+          label="Win Rate"
+          value={settled && stats.winRate != null ? `${stats.winRate.toFixed(0)}%` : '—'}
+          sub={settled ? `${stats.wins}W / ${stats.losses}L` : 'no settled trades yet'}
+          color={settled ? ((stats.winRate ?? 0) >= 50 ? 'text-bull' : 'text-bear') : undefined}
+        />
+        <StatCard
+          label="Avg Result"
+          value={settled && stats.avgResultPct != null ? formatPercent(stats.avgResultPct) : '—'}
+          color={settled ? ((stats.avgResultPct ?? 0) >= 0 ? 'text-bull' : 'text-bear') : undefined}
+        />
+        <StatCard
+          label="Avg R"
+          value={settled && stats.avgRMultiple != null ? `${stats.avgRMultiple.toFixed(2)}R` : '—'}
+          color="text-blue-400"
+        />
+        <StatCard
+          label="Paper P&L"
+          value={settled ? formatCurrency(stats.totalPaperPnl) : '—'}
+          color={settled ? ((stats.totalPaperPnl ?? 0) >= 0 ? 'text-bull' : 'text-bear') : undefined}
+        />
+        <StatCard
+          label="Avg Alert Lag"
+          value={stats.avgLatencySec != null ? `${stats.avgLatencySec}s` : '—'}
+          sub="bar close → alert"
+          color="text-amber-400"
+        />
+      </div>
+
+      {signals.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs text-left">
+            <thead>
+              <tr className="text-slate-400 border-b border-slate-700">
+                <th className="pb-2 pr-4">Symbol</th>
+                <th className="pb-2 pr-4">Session</th>
+                <th className="pb-2 pr-4">Entry</th>
+                <th className="pb-2 pr-4">Exit</th>
+                <th className="pb-2 pr-4">Reason</th>
+                <th className="pb-2 pr-4">Result</th>
+                <th className="pb-2 pr-4">R</th>
+                <th className="pb-2">Lag</th>
+              </tr>
+            </thead>
+            <tbody>
+              {signals.map((s) => {
+                const exit = ORB_EXIT_META[s.exitReason];
+                const pos = (s.resultPct ?? 0) >= 0;
+                return (
+                  <tr key={s._id} className="border-b border-slate-800 hover:bg-slate-800/40">
+                    <td className="py-2 pr-4 font-mono font-semibold">{s.symbol}</td>
+                    <td className="py-2 pr-4 text-slate-500">{s.sessionDate}</td>
+                    <td className="py-2 pr-4 font-mono">{formatCurrency(s.breakoutPrice)}</td>
+                    <td className="py-2 pr-4 font-mono">{s.exitPrice != null ? formatCurrency(s.exitPrice) : '—'}</td>
+                    <td className="py-2 pr-4">
+                      {exit ? (
+                        <span className={`px-1.5 py-0.5 rounded text-xs ${exit.cls}`}>{exit.label}</span>
+                      ) : (
+                        <span className="text-slate-500">pending</span>
+                      )}
+                    </td>
+                    <td className={`py-2 pr-4 font-mono ${s.resultPct != null ? (pos ? 'text-bull' : 'text-bear') : 'text-slate-500'}`}>
+                      {s.resultPct != null ? formatPercent(s.resultPct) : '—'}
+                    </td>
+                    <td className="py-2 pr-4 font-mono text-blue-400">
+                      {s.rMultiple != null ? `${s.rMultiple.toFixed(2)}R` : '—'}
+                    </td>
+                    <td className="py-2 text-slate-500 font-mono">
+                      {s.alertLatencyMs != null ? `${Math.round(s.alertLatencyMs / 1000)}s` : '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
 const Performance = () => {
@@ -264,20 +534,30 @@ const Performance = () => {
   const [closedTrades,  setClosedTrades]  = useState([]);
   const [sectorData,    setSectorData]    = useState(null);
   const [watchlist,     setWatchlist]     = useState([]);
+  const [orbStats,      setOrbStats]      = useState(null);
+  const [orbSignals,    setOrbSignals]    = useState([]);
+  const [goLiveGate,    setGoLiveGate]    = useState(null);
+  const [ledger,        setLedger]        = useState(null);
   const [loading,       setLoading]       = useState(true);
   const [error,         setError]         = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [perfRes, histRes, tradesRes, bmRes, sectorRes, wlRes] = await Promise.all([
+      const [perfRes, histRes, tradesRes, bmRes, sectorRes, wlRes, orbStatsRes, orbSigRes] = await Promise.all([
         performanceApi.get(),
         performanceApi.getHistory(),
         tradesApi.getAll(),
         performanceApi.getBenchmark().catch(() => null),
         tradesApi.getSectorConcentration().catch(() => null),
         watchlistApi.get().catch(() => null),
+        intradayApi.getStats().catch(() => null),
+        intradayApi.getSignals(20).catch(() => null),
       ]);
+      const gateRes = await intradayApi.getGoLive().catch(() => null);
+      setGoLiveGate(gateRes?.data ?? null);
+      const ledgerRes = await disciplineApi.get().catch(() => null);
+      setLedger(ledgerRes?.data ?? null);
 
       setPerf(perfRes.data);
 
@@ -293,6 +573,8 @@ const Performance = () => {
 
       setSectorData(sectorRes?.data ?? null);
       setWatchlist(wlRes?.data ?? []);
+      setOrbStats(orbStatsRes?.data ?? null);
+      setOrbSignals(orbSigRes?.data ?? []);
 
       setError(null);
     } catch (err) {
@@ -304,7 +586,7 @@ const Performance = () => {
 
   /* ── CSV export handlers ──────────────────────────────────────────────────── */
   const exportTrades = useCallback(() => {
-    const headers = ['Symbol','Entry Date','Exit Date','Entry Price','Exit Price','Shares','Capital Deployed','Realized P&L','P&L %','R:R','Exit Reason'];
+    const headers = ['Symbol','Entry Date','Exit Date','Entry Price','Exit Price','Shares','Capital Deployed','Gross P&L','Est Costs','Net P&L','P&L %','R:R','Exit Reason'];
     const rows = closedTrades.map((t) => [
       t.symbol,
       fmtDateCSV(t.entryDate ?? t.createdAt),
@@ -314,6 +596,8 @@ const Performance = () => {
       t.shares ?? '',
       t.capitalDeployed ?? '',
       t.realizedPnl ?? '',
+      t.estCosts ?? '',
+      t.netPnl ?? '',
       t.realizedPnlPct != null ? `${t.realizedPnlPct.toFixed(2)}%` : '',
       t.riskReward != null ? `${t.riskReward.toFixed(2)}` : '',
       t.exitReason ?? '',
@@ -550,6 +834,15 @@ const Performance = () => {
         </div>
       )}
 
+      {/* Go-live gate: evidence-based PASS/FAIL per lane, judged net of costs */}
+      <GoLiveGateCard gate={goLiveGate} />
+
+      {/* Discipline ledger: the measured value of the system's NOs */}
+      <DisciplineLedgerCard ledger={ledger} />
+
+      {/* Intraday ORB experimental track record (renders only once signals exist) */}
+      <OrbTrackRecord stats={orbStats} signals={orbSignals} />
+
       {/* Trade history table */}
       <div className="card">
         <div className="flex items-center justify-between mb-4">
@@ -562,6 +855,43 @@ const Performance = () => {
             </button>
           )}
         </div>
+
+        {/* Net-reality strip: gross vs costs vs net — the number that survives charges */}
+        {closedTrades.length > 0 && (() => {
+          const gross = closedTrades.reduce((s, t) => s + (t.realizedPnl ?? 0), 0);
+          const costs = closedTrades.reduce((s, t) => s + (t.estCosts ?? 0), 0);
+          const net = closedTrades.reduce((s, t) => s + (t.netPnl ?? t.realizedPnl ?? 0), 0);
+          const netWins = closedTrades.filter((t) => (t.netPnl ?? t.realizedPnl ?? 0) > 0);
+          const grossWinSum = netWins.reduce((s, t) => s + (t.netPnl ?? t.realizedPnl ?? 0), 0);
+          const grossLossSum = Math.abs(
+            closedTrades
+              .filter((t) => (t.netPnl ?? t.realizedPnl ?? 0) <= 0)
+              .reduce((s, t) => s + (t.netPnl ?? t.realizedPnl ?? 0), 0)
+          );
+          const profitFactor = grossLossSum > 0 ? grossWinSum / grossLossSum : null;
+          const holdDays = closedTrades
+            .filter((t) => t.entryDate && t.exitDate)
+            .map((t) => Math.max(0, (new Date(t.exitDate) - new Date(t.entryDate)) / 86_400_000));
+          const avgHold = holdDays.length
+            ? holdDays.reduce((s, d) => s + d, 0) / holdDays.length
+            : null;
+          const cell = (label, value, cls = 'text-slate-100') => (
+            <div>
+              <p className="text-[10px] uppercase tracking-wide text-slate-500">{label}</p>
+              <p className={`font-mono font-semibold text-sm ${cls}`}>{value}</p>
+            </div>
+          );
+          return (
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4 bg-surface-elevated border border-slate-700/60 rounded-lg p-3">
+              {cell('Gross P&L', formatCurrency(gross), gross >= 0 ? 'text-bull' : 'text-bear')}
+              {cell('Est Costs', `− ${formatCurrency(costs)}`, 'text-slate-300')}
+              {cell('Net P&L', formatCurrency(net), net >= 0 ? 'text-bull' : 'text-bear')}
+              {cell('Profit Factor (net)', profitFactor != null ? profitFactor.toFixed(2) : '∞',
+                profitFactor == null || profitFactor >= 1.3 ? 'text-bull' : 'text-wait')}
+              {cell('Avg Hold', avgHold != null ? `${avgHold.toFixed(1)}d` : '—')}
+            </div>
+          );
+        })()}
 
         {closedTrades.length === 0 ? (
           <div className="text-center py-10">
@@ -582,9 +912,12 @@ const Performance = () => {
                   <th className="pb-2 pr-4">Entry</th>
                   <th className="pb-2 pr-4">Exit</th>
                   <th className="pb-2 pr-4">Shares</th>
-                  <th className="pb-2 pr-4">P&L</th>
+                  <th className="pb-2 pr-4">Gross P&L</th>
+                  <th className="pb-2 pr-4">Costs</th>
+                  <th className="pb-2 pr-4">Net P&L</th>
                   <th className="pb-2 pr-4">P&L %</th>
                   <th className="pb-2 pr-4">R:R</th>
+                  <th className="pb-2 pr-4">Hold</th>
                   <th className="pb-2 pr-4">Reason</th>
                   <th className="pb-2">Date</th>
                 </tr>
@@ -592,21 +925,36 @@ const Performance = () => {
               <tbody>
                 {closedTrades.map((t) => {
                   const pnl = t.realizedPnl ?? 0;
+                  const net = t.netPnl ?? pnl;
                   const color = pnl >= 0 ? 'text-bull' : 'text-bear';
+                  const netColor = net >= 0 ? 'text-bull' : 'text-bear';
+                  const holdDays =
+                    t.entryDate && t.exitDate
+                      ? Math.max(0, (new Date(t.exitDate) - new Date(t.entryDate)) / 86_400_000)
+                      : null;
                   return (
                     <tr key={t._id} className="border-b border-slate-800 hover:bg-slate-800/40">
                       <td className="py-2 pr-4 font-mono font-semibold">{t.symbol}</td>
                       <td className="py-2 pr-4 font-mono">{formatCurrency(t.entryPrice)}</td>
                       <td className="py-2 pr-4 font-mono">{formatCurrency(t.exitPrice)}</td>
                       <td className="py-2 pr-4">{t.shares}</td>
-                      <td className={`py-2 pr-4 font-mono font-semibold ${color}`}>
+                      <td className={`py-2 pr-4 font-mono ${color}`}>
                         {pnl >= 0 ? '+' : ''}{formatCurrency(pnl)}
+                      </td>
+                      <td className="py-2 pr-4 font-mono text-slate-500">
+                        {t.estCosts != null ? formatCurrency(t.estCosts) : '—'}
+                      </td>
+                      <td className={`py-2 pr-4 font-mono font-semibold ${netColor}`}>
+                        {net >= 0 ? '+' : ''}{formatCurrency(net)}
                       </td>
                       <td className={`py-2 pr-4 ${color}`}>
                         {formatPercent(t.realizedPnlPct ?? 0)}
                       </td>
                       <td className="py-2 pr-4 text-blue-400">
                         {t.riskReward ? `${t.riskReward.toFixed(1)}:1` : '—'}
+                      </td>
+                      <td className="py-2 pr-4 text-slate-400">
+                        {holdDays != null ? `${holdDays.toFixed(holdDays < 10 ? 1 : 0)}d` : '—'}
                       </td>
                       <td className="py-2 pr-4">
                         <span
