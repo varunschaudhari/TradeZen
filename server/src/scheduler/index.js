@@ -13,7 +13,9 @@
 import cron from 'node-cron';
 import { ENTRY_WATCH_INTERVAL_MINUTES } from '../config/constants.js';
 import { logger } from '../config/logger.js';
-import { runFullScan, runEodPrep, isMarketOpen } from './scanPipeline.js';
+import { runFullScan, runEodPrep, isMarketOpen, isTradingDay } from './scanPipeline.js';
+import ScanResult from '../models/ScanResult.js';
+import Config from '../models/Config.js';
 import { refreshEarningsCalendar } from '../services/earningsCalendar.js';
 import { watchEntryZones } from '../services/entryWatcher.js';
 import { runOrbScan, settlePaperTrades, remindSquareOff } from '../services/orbScanner.js';
@@ -51,6 +53,65 @@ function job(name, handler) {
       logger.error(`Cron job "${name}" failed`, { error: err.message });
     }
   };
+}
+
+function getNowIST() {
+  return new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+}
+
+/**
+ * The most recent EOD-prep cutoff (16:15 IST) on a trading day at or before `nowIst`.
+ * Returned as a REAL (unshifted) instant, comparable directly against stored
+ * `createdAt` timestamps.
+ * @param {Date} nowIst - IST-shifted "now" (see getNowIST)
+ * @returns {Date}
+ */
+function lastEodPrepCutoff(nowIst) {
+  const cutoffIst = new Date(nowIst);
+  cutoffIst.setUTCHours(16, 15, 0, 0);
+  if (cutoffIst > nowIst) cutoffIst.setUTCDate(cutoffIst.getUTCDate() - 1);
+  while (!isTradingDay(cutoffIst)) {
+    cutoffIst.setUTCDate(cutoffIst.getUTCDate() - 1);
+  }
+  return new Date(cutoffIst.getTime() - 5.5 * 60 * 60 * 1000);
+}
+
+/**
+ * Startup safety net for JOB 11. node-cron doesn't catch up missed schedules — if the
+ * container isn't running at exactly 16:15 IST, the EOD-prep shortlist silently never
+ * gets built, and the ORB scanner (JOB 14) then runs all day evaluating nothing without
+ * ever logging an error (this happened for real: two sessions in a row produced zero
+ * signals before anyone noticed). Runs a catch-up in the background — never blocks
+ * startup/health checks — only when the latest shortlist actually predates the most
+ * recent cutoff (a normal restart with a fresh shortlist is a no-op), and only when
+ * `Config.scannerEnabled` is on: the manual pause switch is a deliberate "stop all
+ * automated activity" control and this net must never override it.
+ * @returns {Promise<void>}
+ */
+export async function catchUpEodPrepIfStale() {
+  try {
+    const [config, latest] = await Promise.all([
+      Config.findOne().select('scannerEnabled').lean(),
+      ScanResult.findOne({ scanType: 'EOD_PREP' }).sort({ createdAt: -1 }).select('createdAt').lean(),
+    ]);
+    const cutoff = lastEodPrepCutoff(getNowIST());
+    if (latest && latest.createdAt >= cutoff) return; // fresh — nothing to do
+    if (!config?.scannerEnabled) {
+      logger.warn('EOD-prep shortlist is stale, but the scanner is paused — catch-up skipped', {
+        lastRun: latest?.createdAt ?? null,
+      });
+      return;
+    }
+
+    logger.warn('EOD-prep shortlist missed its 16:15 IST slot — running catch-up now', {
+      lastRun: latest?.createdAt ?? null,
+      cutoff,
+    });
+    const { candidates } = await runEodPrep({ forceRun: true });
+    logger.info('EOD-prep catch-up done', { candidates });
+  } catch (err) {
+    logger.error('EOD-prep catch-up failed', { error: err.message });
+  }
 }
 
 /**
@@ -208,6 +269,11 @@ export const startScheduler = () => {
       logger.info('EOD prep job done', { candidates });
     })
   );
+  // Startup safety net: if the container wasn't running at the last 16:15 IST slot, the
+  // ORB scanner would otherwise scan all day against a stale/empty shortlist with no
+  // error logged. Fire-and-forget — the discovery pipeline takes minutes and must not
+  // block startup or the /health check.
+  catchUpEodPrepIfStale();
 
   // JOB 9 — Signal expiry cleanup (9:00 AM IST ≈ 3:32 UTC, daily)
   cron.schedule(
