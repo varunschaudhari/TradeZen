@@ -243,42 +243,28 @@ function checkGate6(stockData) {
   };
 }
 
-// ── Gate 7: Claude confidence (market-mode adaptive) — INTELLIGENCE LAYER (post-Claude) ────────
-// BULL: Accept MEDIUM (more opportunities). CAUTION: Require HIGH (defensive). BEAR: Skip BUY entirely.
-export const checkGate7 = (claudeResult, marketData) => {
-  const confidence = claudeResult?.confidence;
-  const marketMode = marketData?.marketMode;
+// ── Gate 7: Score confidence HIGH — DETERMINISTIC INTELLIGENCE LAYER (post-gates) ──────
+// Was "Claude confidence"; now the composite score's own confidence band (verdictEngine).
+// The old gate claimed BULL-accepts-MEDIUM, but the enforced rule was always BUY⇒HIGH
+// (parseClaudeResponse downgraded every non-HIGH BUY) — this makes record and rule agree.
+export const checkGate7 = (verdictResult, marketData) => {
+  const confidence = verdictResult?.confidence;
 
   // BEAR mode: no BUY signals allowed
-  if (marketMode === 'BEAR') {
+  if (marketData?.marketMode === 'BEAR') {
     return {
       passed: false,
-      reason: `Market in BEAR mode — BUY signals paused, only WAIT/SKIP allowed`,
+      reason: 'Market in BEAR mode — BUY signals paused, only WAIT/SKIP allowed',
     };
   }
 
-  // BULL mode: accept MEDIUM or better (more signals, still safe)
-  if (marketMode === 'BULL') {
-    if (confidence === CONFIDENCE_LEVELS.HIGH || confidence === CONFIDENCE_LEVELS.MEDIUM) {
-      return {
-        passed: true,
-        reason: `Bull market: Claude ${confidence} confidence accepted for BUY`,
-      };
-    }
-    return {
-      passed: false,
-      reason: `Bull market requires at least ${CONFIDENCE_LEVELS.MEDIUM} confidence, got ${confidence}`,
-    };
-  }
-
-  // CAUTION (default): require HIGH confidence (conservative)
   if (confidence !== CONFIDENCE_LEVELS.HIGH) {
     return {
       passed: false,
-      reason: `Caution mode: requires HIGH confidence, got ${confidence}`,
+      reason: `Score confidence ${confidence ?? 'UNKNOWN'} — HIGH required for BUY`,
     };
   }
-  return { passed: true, reason: 'Claude confidence HIGH — intelligence layer passed' };
+  return { passed: true, reason: 'Composite score confidence HIGH — intelligence layer passed' };
 };
 
 // ── Gate 8: News sentiment + auto-negative keywords — HARD BLOCK ────────────────
@@ -474,7 +460,7 @@ export const runAllGates = (stockData, marketData, newsData) => {
     else if (!result.passed && (n === 4 || n === 5)) softGatesFailed += 1;
   }
 
-  gateDetails.gate7 = { passed: false, reason: 'Pending Claude API call' };
+  gateDetails.gate7 = { passed: false, reason: 'Pending verdict-engine confidence check' };
 
   const extras = {
     volumeAnomaly,

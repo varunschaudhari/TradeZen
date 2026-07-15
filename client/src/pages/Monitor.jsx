@@ -330,14 +330,13 @@ const AnalyticsCard = ({ analytics }) => {
       <div className="grid grid-cols-3 gap-2 mb-3">
         <Stat label="Signals/scan" value={signalGen.avgSignalsPerScan} color="text-buy" />
         <Stat label="BUY conv." value={`${signalGen.buyConversionPct}%`} color="text-bull" />
-        <Stat label="Claude calls" value={signalGen.claudeCalls} color="text-accent" />
+        <Stat label="Verdicts run" value={signalGen.claudeCalls} color="text-accent" />
         <Stat label="Avg duration" value={fmtDur(performance.avgDurationMs)} />
         <Stat label="Fastest" value={fmtDur(performance.fastestMs)} color="text-bull" />
         <Stat label="Slowest" value={fmtDur(performance.slowestMs)} color="text-wait" />
       </div>
       <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
-        <span>Claude spend (window): <span className="text-slate-200 font-mono">₹{performance.totalCostInr}</span></span>
-        <span>Avg/scan: <span className="text-slate-200 font-mono">₹{performance.avgCostPerScanInr}</span></span>
+        <span>Verdict cost (window): <span className="text-slate-200 font-mono">₹{performance.totalCostInr}</span> <span className="text-slate-600">(deterministic verdicts are free)</span></span>
       </div>
       {topDropReasons?.length > 0 && (
         <div className="border-t border-slate-700/60 pt-2">
@@ -355,6 +354,53 @@ const AnalyticsCard = ({ analytics }) => {
   );
 };
 AnalyticsCard.propTypes = { analytics: PropTypes.object };
+
+/* ── Score reachability: how close does the latest scan get to a real BUY? ───────
+ * The verdict engine only BUYs at score-confidence HIGH (≥60) — this makes a
+ * persistently-empty 60+ band visible per-scan instead of discovered days later. */
+const SCORE_BUCKET_COLOR = { '<50': 'text-slate-500', '50-59': 'text-wait', '60-69': 'text-bull', '70+': 'text-buy' };
+const ScoreDistributionCard = ({ dist }) => {
+  if (!dist?.available) {
+    return (
+      <Card title="Score Reachability (latest scan)">
+        <p className="text-slate-500 text-sm">No gate-qualified stocks in the latest scan yet.</p>
+      </Card>
+    );
+  }
+  const { byScoreBucket, byVerdict, qualifiedCount, topScores } = dist;
+  return (
+    <Card title="Score Reachability (latest scan)">
+      <div className="grid grid-cols-4 gap-2 mb-3">
+        {Object.entries(byScoreBucket).map(([bucket, count]) => (
+          <Stat key={bucket} label={bucket} value={count} color={SCORE_BUCKET_COLOR[bucket]} />
+        ))}
+      </div>
+      <div className="flex items-center gap-3 text-xs text-slate-400 mb-3">
+        <span>{qualifiedCount} gate-qualified →</span>
+        <span className="text-buy font-mono">{byVerdict.BUY} BUY</span>
+        <span className="text-wait font-mono">{byVerdict.WAIT} WAIT</span>
+        <span className="text-slate-500 font-mono">{byVerdict.SKIP} SKIP</span>
+        {byVerdict.BUY === 0 && qualifiedCount > 0 && (
+          <span className="text-wait">— no score reached the HIGH band this scan</span>
+        )}
+      </div>
+      {topScores?.length > 0 && (
+        <div className="border-t border-slate-700/60 pt-2">
+          <p className="text-[11px] text-slate-500 mb-1.5">Top scores this scan</p>
+          <div className="flex flex-wrap gap-1.5">
+            {topScores.map((s) => (
+              <span key={s.symbol} className="text-[11px] px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400">
+                {s.symbol}: <span className="text-slate-200 font-mono">{s.score}</span>
+                <span className={s.verdict === 'BUY' ? 'text-buy' : s.verdict === 'WAIT' ? 'text-wait' : 'text-slate-500'}> {s.verdict}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+};
+ScoreDistributionCard.propTypes = { dist: PropTypes.object };
 
 /* ── Feature 7: Events feed ───────────────────────────────────────────────────── */
 const EventsFeed = ({ events }) => (
@@ -671,6 +717,8 @@ const Monitor = () => {
               </p>
             </Card>
           )}
+
+          <ScoreDistributionCard dist={overview?.scoreDistribution} />
 
           {/* Analytics + Health (Features 9, 10, 5) */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

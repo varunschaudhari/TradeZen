@@ -56,7 +56,7 @@ CapitalTooltip.propTypes = {
 /* ── Chart tick styling ─────────────────────────────────────────────────────── */
 const TICK_STYLE = { fill: '#94a3b8', fontSize: 11 };
 
-const PerformanceChart = ({ monthlyData, capitalData, benchmarkData }) => {
+const PerformanceChart = ({ monthlyData = [], capitalData = [], benchmarkData = [] }) => {
   // Merge capitalData + benchmarkData into one series for the combined chart
   const combinedData = capitalData.map((pt) => {
     const bm = benchmarkData.find((b) => b.label === pt.date);
@@ -167,7 +167,5 @@ PerformanceChart.propTypes = {
     PropTypes.shape({ label: PropTypes.string, portfolioCapital: PropTypes.number, niftyCapital: PropTypes.number })
   ),
 };
-
-PerformanceChart.defaultProps = { monthlyData: [], capitalData: [], benchmarkData: [] };
 
 export default PerformanceChart;

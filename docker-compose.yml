@@ -30,7 +30,7 @@ services:
     container_name: swing-trader-server
     restart: unless-stopped
     ports:
-      - "5000:5000"
+      - "5001:5001"
     env_file:
       - ./server/.env
     environment:
@@ -43,7 +43,7 @@ services:
       - ./server:/app
       - /app/node_modules
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:5001/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -77,7 +77,7 @@ services:
     container_name: swing-trader-client
     restart: unless-stopped
     ports:
-      - "3000:80"
+      - "3001:80"
     depends_on:
       - server
     healthcheck:

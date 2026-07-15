@@ -60,6 +60,9 @@ export const ATR_TRAIL_ENABLED = true;
 export const ATR_TRAIL_MULT = 2.75;
 export const ATR_TRAIL_REPLACES_T2 = true;
 export const EARNINGS_BUFFER_DAYS = 15;
+// Minimum pre-verdict gates before a candidate reaches the deterministic verdict engine.
+// (Name kept from the Claude era — this was the "5+ gates before a Claude call" bar, and
+// shouldCallClaude/reachedClaude field names persist in stored ScanResult docs.)
 export const GATES_REQUIRED_FOR_CLAUDE = 5;
 export const SIMONS_OVERRIDE_THRESHOLD = 80; // Simons score ≥ 80 allows soft-gate override
 export const SL_WARNING_PCT = 2;
@@ -91,10 +94,10 @@ export const DEPLOYMENT_CAP_BY_MODE = Object.freeze({
 });
 
 // Claude API cost control
-export const CLAUDE_MAX_TOKENS = 1500;
-export const DAILY_CLAUDE_COST_ALERT_INR = 50;
-export const CLAUDE_TEMPERATURE = 0; // deterministic — same data → same verdict
-export const CLAUDE_RATE_LIMIT_WAIT_MS = 60_000; // wait on HTTP 429 before retrying
+// (Retired 2026-07-13: CLAUDE_MAX_TOKENS / DAILY_CLAUDE_COST_ALERT_INR /
+// CLAUDE_TEMPERATURE / CLAUDE_RATE_LIMIT_WAIT_MS — the Claude verdict engine was
+// replaced by the deterministic verdictEngine.js. Claude remains only in Haiku
+// headline sentiment (newsFetcher) and the Ask-Claude chat route.)
 export const SETUP_TYPES = Object.freeze([
   'MOMENTUM_BREAKOUT',
   'PULLBACK_TO_SUPPORT',
@@ -297,6 +300,43 @@ export const ORB_PAPER_RISK_PCT = 0.5; // % of paper capital risked per signal
 export const ORB_SQUAREOFF_MINUTES = 15 * 60 + 10; // exit at the 15:10 IST bar's close (≤ 15:15)
 export const ORB_SETTLE_LOOKBACK_DAYS = 5; // settle missed sessions while 5m bars still exist
 
+// ── Intraday module v2 — 3 strategies × 2 directions, own universe (2026-07-09) ──────
+// Universe (intradayUniverse.js): liquid large-cap / F&O-proxy stocks ONLY, ranked by
+// INTRADAY suitability (volatility × liquidity) — not the swing composite score. A
+// trend-quality stock can be intraday-dead, and vice versa; reusing the swing EOD-prep
+// shortlist (the original v1 design) was the root cause of two straight losing ORB
+// signals. Reuses the existing cheap /screen pass — atrPct/avgTurnoverInr are already
+// computed there — so this costs nothing beyond the swing EOD-prep call already made daily.
+export const INTRADAY_UNIVERSE_TIERS = Object.freeze(['NIFTY50', 'NEXT50']);
+export const INTRADAY_MAX_SYMBOLS = 15; // shortlist cap per session, shared by all 3 strategies
+export const INTRADAY_MIN_TURNOVER_INR = 50_000_000; // ₹5 crore/day — stricter than swing's ₹1cr floor
+export const INTRADAY_MIN_ATR_PCT = 1.0; // below this, moves are too small to clear round-trip costs
+
+// Direction + strategy identifiers, shared across all three setups below.
+export const TRADE_DIRECTIONS = Object.freeze({ LONG: 'LONG', SHORT: 'SHORT' });
+export const INTRADAY_SETUP_TYPES = Object.freeze([
+  'ORB',
+  'VWAP_REVERSION',
+  'MOMENTUM_CONTINUATION',
+  'MANUAL',
+]);
+
+// VWAP mean-reversion: fades an overextension back toward the session VWAP — the
+// opposite thesis to ORB (which rides a breakout AWAY from a reference level). Needs
+// vwapStdDev from the Python intraday snapshot (python-service/app/services/intraday.py).
+export const VWAP_REVERSION_ENTRY_BAND_MULT = 2.0; // trigger when price clears vwap ± this × vwapStdDev
+export const VWAP_REVERSION_STOP_BAND_MULT = 3.0; // stop beyond the entry band (further extension)
+export const VWAP_REVERSION_TARGET_BUFFER_PCT = 0.1; // target sits just short of vwap itself
+
+// Momentum continuation: buys/sells a shallow pullback to EMA(9) within an established
+// intraday trend, triggering on the first bar that resumes the trend direction. No
+// natural "measured move" like ORB's opening-range height, so the target is R-based.
+export const MOMENTUM_EMA_PERIOD = 9; // must match EMA_PERIOD in python-service/intraday.py
+export const MOMENTUM_MIN_TREND_PCT = 0.3; // min |price − ema9| / ema9 to call it "trending", not chop
+export const MOMENTUM_PULLBACK_MAX_PCT = 0.5; // pullback bar must stay within this % of ema9
+export const MOMENTUM_STOP_BUFFER_PCT = 0.15; // stop beyond the pullback bar's extreme
+export const MOMENTUM_TARGET_R_MULT = 1.8; // target = entry ± this × (entry − stop)
+
 // Discipline ledger (disciplineLedger.js) — records every trade the system blocked and
 // marks it to market later, so the value of the NOs is a measured number, both ways.
 export const LEDGER_EVAL_AFTER_DAYS = 7; // mark-to-market horizon (≈ 5 trading days)
@@ -317,21 +357,38 @@ export const MIXED_POSITION_SIZE_FACTOR = 0.7; // narrow rally: reduce position 
 // SCREEN_TIERS = null → all tiers (Nifty50 + Next50 + Midcap150 + Smallcap100).
 export const SCREEN_ENABLED = (process.env.SCREEN_ENABLED ?? 'true') !== 'false';
 export const SCREEN_TIERS = null;
-export const MAX_CANDIDATES_TO_ANALYZE = 45; // cap survivors sent to the heavy pipeline
+// Raised 45→90 (2026-07-13): the analyze cap ranks screened survivors by 20-day ROC
+// and only sends the top N deeper — with ~133 typically surviving screening, 45 let
+// ~88 through-screen candidates never reach a gate check at all purely on cap size,
+// not quality (ROUTE — real setup, gates 6/7, score 53 — missed the ROC-rank cut this
+// way). 90 covers ~2/3 of a typical screen instead of ~1/3; each extra 6 candidates
+// costs one more DISCOVERY_CONCURRENCY round in the analyze stage, so scan duration
+// should roughly track the candidate-count ratio (est. ~8-10min vs the prior ~4-5.5min),
+// still comfortably under the 15min SCAN_INTERVAL_MINUTES cadence. Revisit the ranking
+// key itself (pure 20-day ROC favors sustained trends over fresh breakouts) if this
+// alone doesn't catch enough of them.
+export const MAX_CANDIDATES_TO_ANALYZE = 90; // cap survivors sent to the heavy pipeline
 
 // EOD prep scan (post-close next-session watchlist build — no Claude, no signals)
 export const EOD_PREP_MAX_CANDIDATES = 12; // top gate-qualified candidates kept for the watchlist
 
 // Stock discovery (Flow 2 — stockDiscovery.js)
-export const MAX_CLAUDE_CALLS_PER_SCAN = 15; // stage-8 cap: candidates sent to Claude
+// Raised 15→100 (2026-07-13): this ranks gate-passed candidates by composite score and
+// only forwards the top N to the verdict engine — it existed to cap expensive Claude
+// Sonnet calls, but verdictEngine.js (since the same date) is a free, deterministic JS
+// function, so that cost no longer exists. 100 is a safety ceiling, not a working limit —
+// it sits above MAX_CANDIDATES_TO_ANALYZE (90), so under the current analyze cap this
+// never actually binds; keep it above that value if the analyze cap is raised further.
+export const MAX_CLAUDE_CALLS_PER_SCAN = 100; // stage-8 cap: candidates sent to the verdict engine
 export const DISCOVERY_CONCURRENCY = 6; // parallel per-candidate enrich+gate workers
-// Parallel Claude+save workers in the scan pipeline. NOTE: throughput is ultimately
-// capped by your Anthropic tier's output-tokens/min limit (~1,050 tok per signal). On a
-// 4,000 tok/min tier, concurrency >2 just triggers 429s + 60s backoffs — set to 1 for the
-// smoothest pacing, or raise once on a higher tier. Env-tunable.
+// Parallel verdict+save workers in the scan pipeline. Raised 2→8 (2026-07-13): this used
+// to throttle for Anthropic per-minute token limits (429s on a 4,000 tok/min tier) — moot
+// now that this stage is a pure JS function + one Signal save per candidate, no external
+// API call at all. 8 matches roughly what MongoDB comfortably takes for concurrent simple
+// writes; raise further if scan duration is still dominated by this stage. Env-tunable.
 export const SCAN_CLAUDE_CONCURRENCY = Math.max(
   1,
-  parseInt(process.env.SCAN_CLAUDE_CONCURRENCY ?? '2', 10)
+  parseInt(process.env.SCAN_CLAUDE_CONCURRENCY ?? '8', 10)
 );
 export const SCAN_RESULT_TTL_SECONDS = 14 * 24 * 60 * 60; // keep scan snapshots 14 days
 
@@ -406,6 +463,6 @@ export const WEEKLY_TRENDS = Object.freeze({
   SIDEWAYS: 'SIDEWAYS',
 });
 
-export const CLIENT_URL = process.env.CLIENT_URL ?? 'http://localhost:3000';
+export const CLIENT_URL = process.env.CLIENT_URL ?? 'http://localhost:3001';
 export const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL ?? 'http://localhost:8001';
 export const SERVER_VERSION = '1.0.0';

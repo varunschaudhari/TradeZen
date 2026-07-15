@@ -2,13 +2,13 @@
   "info": {
     "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "name": "SwingTrader AI — Complete API",
-    "description": "Full REST API test suite for SwingTrader AI (MERN + Python FastAPI + Claude Sonnet).\n\n**Pre-flight:**\n1. Set `baseUrl` collection variable → `http://localhost:5000`\n2. `npm run dev` from `swing-trader/server/`\n3. `uvicorn app.main:app --port 8001` from `swing-trader/python-service/`\n4. MongoDB Atlas reachable (MONGODB_URI in server/.env)\n\n**Rate limits:**  Global 100 req/15 min · /api/chat 10 req/min",
+    "description": "Full REST API test suite for SwingTrader AI (MERN + Python FastAPI + Claude Sonnet).\n\n**Pre-flight:**\n1. Set `baseUrl` collection variable → `http://localhost:5001`\n2. `npm run dev` from `swing-trader/server/`\n3. `uvicorn app.main:app --port 8001` from `swing-trader/python-service/`\n4. MongoDB Atlas reachable (MONGODB_URI in server/.env)\n\n**Rate limits:**  Global 2000 req/15 min · /api/chat 10 req/min",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "baseUrl",
-      "value": "http://localhost:5000",
+      "value": "http://localhost:5001",
       "type": "string",
       "description": "Express server base URL"
     },
@@ -986,7 +986,7 @@
     },
     {
       "name": "12 — WebSocket Reference",
-      "description": "Socket.io events emitted by the server. These cannot be tested via HTTP — use the Socket.io test client or integrate with the React dashboard.\n\n**Connect:** socket.io client → http://localhost:5000\n\n**Events emitted by server:**\n\n| Event | Trigger | Payload |\n|---|---|---|\n| signal:new | New BUY/WAIT/SKIP signal saved | Signal document |\n| signal:update | Signal isActive toggled | { signalId, isActive } |\n| market:update | Market data refreshed | Market snapshot |\n| trade:target1 | PATCH /:id/target1 called | Trade document |\n| trade:target2 | Trade closed with TARGET2 | Trade document |\n| trade:sl_warning | Price within 2% above SL | { tradeId, symbol, currentPrice, stopLoss, distancePct } |\n| trade:earnings | Stock within 15 days of earnings | { symbol, daysToEarnings } |\n| market:bearmode | Nifty drops below 20 EMA | {} |\n| market:vixspike | VIX exceeds 25 | { vix } |\n| scan:complete | Full scan cycle finishes | { scanned, signals, timestamp } |\n\n**Quick test (browser console):**\n```javascript\nconst s = io('http://localhost:5000');\ns.onAny((event, data) => console.log(event, data));\n```",
+      "description": "Socket.io events emitted by the server. These cannot be tested via HTTP — use the Socket.io test client or integrate with the React dashboard.\n\n**Connect:** socket.io client → http://localhost:5001\n\n**Events emitted by server:**\n\n| Event | Trigger | Payload |\n|---|---|---|\n| signal:new | New BUY/WAIT/SKIP signal saved | Signal document |\n| signal:update | Signal isActive toggled | { signalId, isActive } |\n| market:update | Market data refreshed | Market snapshot |\n| trade:target1 | PATCH /:id/target1 called | Trade document |\n| trade:target2 | Trade closed with TARGET2 | Trade document |\n| trade:sl_warning | Price within 2% above SL | { tradeId, symbol, currentPrice, stopLoss, distancePct } |\n| trade:earnings | Stock within 15 days of earnings | { symbol, daysToEarnings } |\n| market:bearmode | Nifty drops below 20 EMA | {} |\n| market:vixspike | VIX exceeds 25 | { vix } |\n| scan:complete | Full scan cycle finishes | { scanned, signals, timestamp } |\n\n**Quick test (browser console):**\n```javascript\nconst s = io('http://localhost:5001');\ns.onAny((event, data) => console.log(event, data));\n```",
       "item": []
     }
   ]

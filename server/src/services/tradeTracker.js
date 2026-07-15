@@ -33,9 +33,9 @@ import {
 } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 import { analyzeStocks } from './pythonBridge.js';
-import { netAfterCosts } from './tradingCosts.js';
+import { estimateTradeCosts } from './tradingCosts.js';
 import { sendEarningsReminder, sendSlWarning, sendTarget1Hit, sendTarget2Hit } from './notifier.js';
-import { emitEvent, SOCKET_EVENTS } from '../socket/socketHandlers.js';
+import { emitToUser, SOCKET_EVENTS } from '../socket/socketHandlers.js';
 
 const round2 = (n) => Math.round(n * 100) / 100;
 const MS_PER_DAY = 86_400_000;
@@ -53,6 +53,7 @@ export const buildTradeDoc = (data, signalId = null) => {
   const entryPrice = Number(data.entryPrice);
   const target1Shares = Math.floor(shares / 2);
   return {
+    userId: data.userId,
     symbol: String(data.symbol).toUpperCase(),
     signalId: signalId ?? data.signalId ?? null,
     source: data.source ?? 'MANUAL',
@@ -79,6 +80,21 @@ export const buildTradeDoc = (data, signalId = null) => {
 export const isAtrTrailActive = (trade) => ATR_TRAIL_ENABLED && trade?.atr14 > 0;
 
 /**
+ * Split a trade's shares into the T1-booked leg and the still-exposed remainder (pure).
+ * Falls back to floor(shares/2) for trades predating (or missing) a stored
+ * target1Shares — same half-position convention buildTradeDoc already uses.
+ *
+ * @param {object} trade - Trade document/object
+ * @returns {{ hasT1: boolean, t1Shares: number, remainingShares: number }}
+ */
+function splitT1Legs(trade) {
+  const hasT1 = Boolean(trade.target1Hit) && trade.target1ExitPrice != null;
+  if (!hasT1) return { hasT1, t1Shares: 0, remainingShares: trade.shares };
+  const t1Shares = Math.min(trade.target1Shares ?? Math.floor(trade.shares / 2), trade.shares);
+  return { hasT1, t1Shares, remainingShares: trade.shares - t1Shares };
+}
+
+/**
  * Evaluate an open trade against the current price (pure).
  * Uses the trailed stop once Target 1 has been hit: with an entry-time ATR the stop
  * ratchets to highWaterMark − ATR_TRAIL_MULT × atr14 (never below entry, never down);
@@ -86,13 +102,21 @@ export const isAtrTrailActive = (trade) => ATR_TRAIL_ENABLED && trade?.atr14 > 0
  * and ATR_TRAIL_REPLACES_T2 is on, T2 no longer closes the position — the trail is the
  * exit, so winners can run past the fixed target.
  *
+ * Once T1 has been hit, unrealizedPnl blends the ALREADY-BOOKED leg (target1Shares at
+ * target1ExitPrice — locked in, no longer exposed to price) with the live leg (the
+ * remaining shares at the current price) — not the full original position marked at the
+ * live price, which overstates risk still on the table and understates a T1-then-reversal.
+ *
  * @param {object} trade - Trade document/object
  * @param {number} price - Current price
  * @param {number} [nowMs] - Reference epoch ms
  * @returns {object} Decision: pnl, slHit, slWarning, t1Hit, t2Hit, highWaterMark, trailAdvanceTo, …
  */
 export const evaluateTrade = (trade, price, nowMs = Date.now()) => {
-  const unrealizedPnl = round2((price - trade.entryPrice) * trade.shares);
+  const { hasT1, t1Shares, remainingShares } = splitT1Legs(trade);
+  const bankedPnl = hasT1 ? (trade.target1ExitPrice - trade.entryPrice) * t1Shares : 0;
+  const livePnl = (price - trade.entryPrice) * remainingShares;
+  const unrealizedPnl = round2(bankedPnl + livePnl);
   const unrealizedPnlPct =
     trade.capitalDeployed > 0 ? round2((unrealizedPnl / trade.capitalDeployed) * 100) : 0;
   const effectiveSl =
@@ -171,21 +195,35 @@ export const computeTarget1Fields = (trade, exitPrice, now = new Date()) => ({
 /**
  * Fields to set when closing a trade fully (pure).
  *
+ * When T1 was hit, realized P&L blends TWO actual legs — target1Shares sold at
+ * target1ExitPrice, and the remaining shares sold at this final exitPrice — rather than
+ * pricing the entire original position off only the final exit (which discards the
+ * profit genuinely locked in at T1). Costs are estimated per leg too: booking half at T1
+ * is a real separate sell order with its own brokerage/STT, not one blended trade.
+ *
  * @param {object} trade - Trade
- * @param {number} exitPrice - Exit price
+ * @param {number} exitPrice - Exit price for the remaining (non-T1) shares
  * @param {string} exitReason - One of EXIT_REASONS
  * @param {Date} [now] - Reference time
  * @returns {object} Close update incl. realized P&L
  */
 export const computeCloseFields = (trade, exitPrice, exitReason, now = new Date()) => {
-  const realizedPnl = round2((exitPrice - trade.entryPrice) * trade.shares);
+  const { hasT1, t1Shares, remainingShares } = splitT1Legs(trade);
+  const t1Pnl = hasT1 ? round2((trade.target1ExitPrice - trade.entryPrice) * t1Shares) : 0;
+  const finalPnl = round2((exitPrice - trade.entryPrice) * remainingShares);
+  const realizedPnl = round2(t1Pnl + finalPnl);
   const realizedPnlPct =
     trade.capitalDeployed > 0 ? round2((realizedPnl / trade.capitalDeployed) * 100) : 0;
+
   // realizedPnl stays gross (continuity with the existing record); netPnl carries the
   // cost-adjusted truth the go-live gate judges.
-  const { netPnl, costs } = netAfterCosts(
-    realizedPnl, trade.entryPrice, exitPrice, trade.shares, 'DELIVERY'
-  );
+  const t1Costs = hasT1
+    ? estimateTradeCosts(trade.entryPrice, trade.target1ExitPrice, t1Shares, 'DELIVERY').total
+    : 0;
+  const finalCosts = estimateTradeCosts(trade.entryPrice, exitPrice, remainingShares, 'DELIVERY').total;
+  const totalCosts = round2(t1Costs + finalCosts);
+  const netPnl = round2(realizedPnl - totalCosts);
+
   return {
     status: TRADE_STATUSES.CLOSED,
     currentPrice: exitPrice,
@@ -193,7 +231,7 @@ export const computeCloseFields = (trade, exitPrice, exitReason, now = new Date(
     exitDate: now,
     realizedPnl,
     realizedPnlPct,
-    estCosts: costs.total,
+    estCosts: totalCosts,
     netPnl,
     exitReason,
   };
@@ -253,31 +291,37 @@ const openPaperTradeFromSignal = async (signal, config) => {
   if (signal?.verdict !== VERDICTS.BUY) return null;
 
   const symbol = signal.symbol;
-  const shares = signal.shares ?? 0;
   const entryPrice = signal.entryZone?.high ?? signal.entryZone?.low;
+  // Re-size against THIS user's own capital/risk% — the Signal's own shares/capitalDeployed
+  // are illustrative only (sized against a shared reference capital, not any one user's).
+  const capital = config.capital ?? 1_000_000;
+  const riskPct = config.riskPercentage ?? DEFAULT_RISK_PCT;
+  const riskPerShare = Math.max(entryPrice - signal.stopLoss, 0.01);
+  const shares = Math.max(Math.floor((capital * (riskPct / 100)) / riskPerShare), 0);
   if (!(shares > 0) || !(entryPrice > 0) || !(signal.stopLoss > 0) || !(signal.target1 > 0)) {
     return null;
   }
 
   // No second paper trade for a symbol already held.
-  if (await Trade.exists({ symbol, status: TRADE_STATUSES.OPEN })) return null;
+  if (await Trade.exists({ userId: config.userId, symbol, status: TRADE_STATUSES.OPEN })) return null;
 
   // Re-check capital guards at open time (the signal passed them when created, but other
   // trades may have opened since).
-  const open = await Trade.find({ status: TRADE_STATUSES.OPEN })
+  const open = await Trade.find({ userId: config.userId, status: TRADE_STATUSES.OPEN })
     .select('capitalDeployed sector')
     .lean();
-  if (open.length >= MAX_OPEN_TRADES) {
-    logger.info(`Auto paper trade skipped (${MAX_OPEN_TRADES} open): ${symbol}`);
+  const maxOpenTrades = config.maxOpenTrades ?? MAX_OPEN_TRADES;
+  if (open.length >= maxOpenTrades) {
+    logger.info(`Auto paper trade skipped (${maxOpenTrades} open): ${symbol}`);
     return null;
   }
-  const capital = config.capital ?? 1_000_000;
   const deployed = open.reduce((s, t) => s + (t.capitalDeployed ?? 0), 0);
-  const newDeploy = signal.capitalDeployed ?? shares * entryPrice;
+  const newDeploy = round2(shares * entryPrice);
 
   // Regime-tiered deployment ceiling (mirrors resolveGuards; mode from signal creation).
   const mode = signal.marketContext?.marketMode;
-  const capPct = Math.min(MAX_CAPITAL_DEPLOYED_PCT, DEPLOYMENT_CAP_BY_MODE[mode] ?? MAX_CAPITAL_DEPLOYED_PCT);
+  const maxCapitalDeployedPct = config.maxCapitalDeployedPct ?? MAX_CAPITAL_DEPLOYED_PCT;
+  const capPct = Math.min(maxCapitalDeployedPct, DEPLOYMENT_CAP_BY_MODE[mode] ?? maxCapitalDeployedPct);
   if (deployed + newDeploy > capital * (capPct / 100)) {
     logger.info(`Auto paper trade skipped (${capPct}% deployment cap, ${mode ?? 'no'} mode): ${symbol}`);
     return null;
@@ -311,6 +355,7 @@ const openPaperTradeFromSignal = async (signal, config) => {
   }
 
   const trade = await logTrade({
+    userId: config.userId,
     symbol,
     entryPrice,
     shares,
@@ -344,7 +389,7 @@ function isPastMaxHold(trade) {
 export const markTarget1Hit = async (trade, exitPrice) => {
   Object.assign(trade, computeTarget1Fields(trade, exitPrice));
   await trade.save();
-  emitEvent(SOCKET_EVENTS.TRADE_TARGET1, trade.toObject());
+  emitToUser(trade.userId, SOCKET_EVENTS.TRADE_TARGET1, trade.toObject());
   sendTarget1Hit(trade).catch((e) => logger.error('sendTarget1Hit failed', { error: e.message }));
   logger.info(`Target 1 hit: ${trade.symbol} @ ₹${exitPrice} — SL trailed to ₹${trade.slTrailedTo}`);
   return trade;
@@ -360,8 +405,8 @@ export const markTarget1Hit = async (trade, exitPrice) => {
 export const closeTrade = async (trade, { exitPrice, exitReason = EXIT_REASONS.MANUAL }) => {
   Object.assign(trade, computeCloseFields(trade, exitPrice, exitReason));
   await trade.save();
-  // Always emit TRADE_CLOSED so the Positions UI removes the card immediately
-  emitEvent(SOCKET_EVENTS.TRADE_CLOSED, {
+  // Notify only this user's own connected clients so their Positions UI removes the card
+  emitToUser(trade.userId, SOCKET_EVENTS.TRADE_CLOSED, {
     _id: String(trade._id),
     symbol: trade.symbol,
     exitReason,
@@ -369,7 +414,7 @@ export const closeTrade = async (trade, { exitPrice, exitReason = EXIT_REASONS.M
     realizedPnl: trade.realizedPnl,
   });
   if (exitReason === EXIT_REASONS.TARGET2) {
-    emitEvent(SOCKET_EVENTS.TRADE_TARGET2, trade.toObject());
+    emitToUser(trade.userId, SOCKET_EVENTS.TRADE_TARGET2, trade.toObject());
     sendTarget2Hit(trade).catch((e) => logger.error('sendTarget2Hit failed', { error: e.message }));
   }
   logger.info(`Trade closed: ${trade.symbol} ${exitReason} @ ₹${exitPrice}`, {
@@ -410,7 +455,7 @@ async function processTrade(trade, price, summary) {
 
   if (decision.slHit) {
     await closeTrade(trade, { exitPrice: price, exitReason: EXIT_REASONS.STOPLOSS });
-    emitEvent(SOCKET_EVENTS.TRADE_SL_WARNING, {
+    emitToUser(trade.userId, SOCKET_EVENTS.TRADE_SL_WARNING, {
       tradeId: trade._id,
       symbol: trade.symbol,
       currentPrice: price,
@@ -445,7 +490,7 @@ async function processTrade(trade, price, summary) {
     summary.trailAdvanced = (summary.trailAdvanced ?? 0) + 1;
   } else if (decision.slWarning && notThrottled(trade)) {
     trade.lastSlWarningAt = new Date();
-    emitEvent(SOCKET_EVENTS.TRADE_SL_WARNING, {
+    emitToUser(trade.userId, SOCKET_EVENTS.TRADE_SL_WARNING, {
       tradeId: trade._id,
       symbol: trade.symbol,
       currentPrice: price,
@@ -459,7 +504,7 @@ async function processTrade(trade, price, summary) {
   }
   if (decision.earningsDue) {
     trade.earningsAlertSent = true;
-    emitEvent(SOCKET_EVENTS.TRADE_EARNINGS, {
+    emitToUser(trade.userId, SOCKET_EVENTS.TRADE_EARNINGS, {
       symbol: trade.symbol,
       daysToEarnings: decision.daysToEarnings,
     });
@@ -482,10 +527,11 @@ function notThrottled(trade) {
  * Monitor all open trades against current prices (the 15-min cron step).
  *
  * @param {Record<string, number>} [priceMap] - Pre-fetched prices; fetched if omitted
+ * @param {string} [userId] - Scope to one user's trades; all users' when omitted (cron)
  * @returns {Promise<object>} Summary counters
  */
-export const monitorOpenTrades = async (priceMap = null) => {
-  const open = await Trade.find({ status: TRADE_STATUSES.OPEN });
+export const monitorOpenTrades = async (priceMap = null, userId = null) => {
+  const open = await Trade.find({ status: TRADE_STATUSES.OPEN, ...(userId ? { userId } : {}) });
   const summary = { checked: 0, slHit: 0, t1: 0, t2: 0, warnings: 0, earnings: 0 };
   if (!open.length) return summary;
 

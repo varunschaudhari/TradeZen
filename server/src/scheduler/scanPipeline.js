@@ -9,10 +9,14 @@
  */
 
 import Config from '../models/Config.js';
+import MarketState from '../models/MarketState.js';
 import Trade from '../models/Trade.js';
+import Signal from '../models/Signal.js';
 import ScanResult from '../models/ScanResult.js';
 import {
   DAILY_LOSS_PAUSE_PCT,
+  DEFAULT_CAPITAL,
+  DEFAULT_RISK_PCT,
   DEPLOYMENT_CAP_BY_MODE,
   EOD_PREP_MAX_CANDIDATES,
   GATES_REQUIRED_FOR_CLAUDE,
@@ -33,7 +37,7 @@ import { logger } from '../config/logger.js';
 import { getMarketHealth } from '../services/marketHealthService.js';
 import { getMarketSignals } from '../services/marketSignals.js';
 import { runStockDiscovery } from '../services/stockDiscovery.js';
-import { buildClaudePrompt, callClaudeAPI } from '../services/claudeEngine.js';
+import { decideVerdict } from '../services/verdictEngine.js';
 import { checkGate7 } from '../services/gateChecker.js';
 import { recordBlockedTrade } from '../services/disciplineLedger.js';
 import { saveSignal } from '../services/signalManager.js';
@@ -45,7 +49,7 @@ import {
   sendWaitToBuyUpgrade,
   sendWatchlistPrep,
 } from '../services/notifier.js';
-import { emitEvent, SOCKET_EVENTS } from '../socket/socketHandlers.js';
+import { emitGlobal, SOCKET_EVENTS } from '../socket/socketHandlers.js';
 import * as scanState from '../services/scanState.js';
 import { upsertStockStatuses } from '../services/stockMaster.js';
 
@@ -123,9 +127,9 @@ export function computePositionSize(entry, stopLoss, capital, riskPct) {
  * @param {string|null|undefined} marketMode - BULL | MIXED | CAUTION | BEAR
  * @returns {number} Deployment cap in percent of capital
  */
-export function deploymentCapPct(marketMode) {
+export function deploymentCapPct(marketMode, maxPct = MAX_CAPITAL_DEPLOYED_PCT) {
   const tier = DEPLOYMENT_CAP_BY_MODE[marketMode];
-  return Math.min(MAX_CAPITAL_DEPLOYED_PCT, tier ?? MAX_CAPITAL_DEPLOYED_PCT);
+  return Math.min(maxPct, tier ?? maxPct);
 }
 
 /**
@@ -147,7 +151,7 @@ export function effectiveVerdict(verdict, waitCondition, guards, sector = null) 
   if (guards.tradesAtMax) {
     return {
       verdict: VERDICTS.WAIT,
-      waitCondition: `${MAX_OPEN_TRADES} positions open — wait for one to close`,
+      waitCondition: `${guards.maxOpenTrades ?? MAX_OPEN_TRADES} positions open — wait for one to close`,
     };
   }
   if (guards.capitalExhausted) {
@@ -167,18 +171,23 @@ export function effectiveVerdict(verdict, waitCondition, guards, sector = null) 
  * Resolve capital-protection guard flags from open trades and today's closed losses.
  * The deployment ceiling is regime-tiered (deploymentCapPct); sectorFull maps each
  * sector already at its concentration cap (count or capital share) to a human reason.
- * @param {object} config - Config doc
+ * Position count and the absolute deployment ceiling read Config.maxOpenTrades /
+ * Config.maxCapitalDeployedPct when set (user-configurable via Settings), falling back
+ * to the hardcoded constants — these were previously dead fields the UI could edit but
+ * nothing ever read.
+ * @param {object} config - Config doc (this user's own — guards are evaluated per-user)
  * @param {string|null} [marketMode] - Current market mode (regime tier for the cap)
  * @returns {Promise<{ lossLimitHit: boolean, tradesAtMax: boolean, capitalExhausted: boolean,
- *                     deploymentCapPct: number, marketMode: string|null,
+ *                     deploymentCapPct: number, maxOpenTrades: number, marketMode: string|null,
  *                     sectorFull: Record<string, string> }>}
  */
-async function resolveGuards(config, marketMode = null) {
+export async function resolveGuards(config, marketMode = null) {
   const todayStart = new Date();
   todayStart.setUTCHours(0, 0, 0, 0);
   const [openTrades, lossTrades] = await Promise.all([
-    Trade.find({ status: 'OPEN' }).lean(),
+    Trade.find({ userId: config.userId, status: 'OPEN' }).lean(),
     Trade.find({
+      userId: config.userId,
       status: 'CLOSED',
       exitDate: { $gte: todayStart },
       realizedPnl: { $lt: 0 },
@@ -186,7 +195,8 @@ async function resolveGuards(config, marketMode = null) {
   ]);
   const totalDeployed = openTrades.reduce((s, t) => s + (t.capitalDeployed ?? 0), 0);
   const totalLoss = lossTrades.reduce((s, t) => s + (t.realizedPnl ?? 0), 0);
-  const capPct = deploymentCapPct(marketMode);
+  const maxOpenTrades = config.maxOpenTrades ?? MAX_OPEN_TRADES;
+  const capPct = deploymentCapPct(marketMode, config.maxCapitalDeployedPct ?? MAX_CAPITAL_DEPLOYED_PCT);
 
   // Per-sector concentration: sectors already at the position or capital cap.
   const sectorCapInr = config.capital * (MAX_SECTOR_DEPLOYED_PCT / 100);
@@ -208,12 +218,65 @@ async function resolveGuards(config, marketMode = null) {
 
   return {
     lossLimitHit: totalLoss <= -(config.capital * (DAILY_LOSS_PAUSE_PCT / 100)),
-    tradesAtMax: openTrades.length >= MAX_OPEN_TRADES,
+    tradesAtMax: openTrades.length >= maxOpenTrades,
     capitalExhausted: totalDeployed >= config.capital * (capPct / 100),
     deploymentCapPct: capPct,
+    maxOpenTrades,
     marketMode,
     sectorFull,
   };
+}
+
+/**
+ * Per-user actioning for a newly-saved BUY-quality signal. The Signal itself is shared
+ * (one Claude call, one verdict, everyone sees it) — but whether it's ACTIONABLE is a
+ * function of each user's own capital/open-positions/sector exposure. For every user
+ * watching this symbol: resolve their own guards; if capacity-full, record it on their
+ * own discipline ledger (CAPITAL_GUARD/SECTOR_CAP — distinct from the shared HARD_BLOCK/
+ * QUALITY_DOWNGRADE entries, which have userId: null); if clear, auto-open a paper trade
+ * when they've opted in. Fire-and-forget from the caller — never blocks the scan.
+ *
+ * @param {object} signal - Saved BUY Signal (plain object)
+ * @param {string|null} marketMode - Current regime tier (for the deployment cap)
+ * @returns {Promise<void>}
+ */
+async function applyPerUserActioning(signal, marketMode) {
+  const watchers = await Config.find({ 'watchlist.symbol': signal.symbol }).lean();
+  if (!watchers.length) return;
+
+  await Promise.all(
+    watchers.map(async (config) => {
+      try {
+        const guards = await resolveGuards(config, marketMode);
+        const { verdict, waitCondition } = effectiveVerdict(
+          VERDICTS.BUY,
+          null,
+          guards,
+          signal.sector ?? null
+        );
+        if (verdict !== VERDICTS.BUY) {
+          recordBlockedTrade({
+            userId: config.userId,
+            symbol: signal.symbol,
+            blockType: waitCondition?.startsWith('Sector cap') ? 'SECTOR_CAP' : 'CAPITAL_GUARD',
+            reason: waitCondition,
+            refPrice: signal.entryZone?.high ?? signal.entryZone?.low ?? null,
+            stopLoss: signal.stopLoss,
+            sector: signal.sector ?? null,
+            capital: config.capital,
+            riskPct: config.riskPercentage,
+          }).catch(() => {});
+        } else {
+          await autoOpenPaperTrade(signal, config);
+        }
+      } catch (err) {
+        logger.error(`applyPerUserActioning failed for ${signal.symbol}`, {
+          userId: config.userId,
+          error: err.message,
+        });
+      }
+    })
+  );
 }
 
 /** Reshape the market-health object into the marketData shape gates/Claude expect. */
@@ -235,64 +298,55 @@ function toMarketData(health) {
 }
 
 /**
- * Stage 8 for one candidate: Claude → effective verdict → position size → save → notify.
+ * Stage 8 for one candidate: deterministic verdict → save → notify. The saved
+ * Signal.verdict is the raw gate+score quality call ONLY — no portfolio-capacity guard
+ * is baked in here (that's per-user and happens for each watcher in
+ * applyPerUserActioning, after save). Position-sizing fields on the Signal are
+ * illustrative, sized against a fixed reference capital (DEFAULT_CAPITAL) since the
+ * Signal itself is shared across every watcher.
  * @param {object} candidate - Discovery candidate { stockData, newsData, gateResult, simons }
  * @param {object} marketData - Market snapshot
- * @param {object} config - Config doc
- * @param {object} guards - Capital guard flags
  * @param {object} metrics - Mutable scan metrics
  * @param {number} sizeFactor - Position-size multiplier from market mode (CAUTION/MIXED)
  * @returns {Promise<void>}
  */
-async function processCandidate(candidate, marketData, config, guards, metrics, sizeFactor = 1) {
+async function processCandidate(candidate, marketData, metrics, sizeFactor = 1) {
   const { stockData, newsData, gateResult, simons } = candidate;
-  const prompt = buildClaudePrompt(stockData, marketData, newsData, gateResult, config.capital);
-  const claudeResult = await callClaudeAPI(prompt);
+  // Pure + synchronous — same inputs always produce the same verdict (no LLM in the loop).
+  const verdictResult = decideVerdict(stockData, marketData, gateResult);
+  // Kept as a funnel-volume metric (candidates that reached the verdict stage) — the
+  // field name/UI label predate the Claude removal; cost is always 0 now (see notifier
+  // metrics.totalCostInr, never incremented post-cutover).
   metrics.claudeCalls += 1;
-  metrics.totalTokens += claudeResult.tokensUsed ?? 0;
-  metrics.totalCostInr += claudeResult.costInr ?? 0;
 
-  const gate7Result = checkGate7(claudeResult, marketData);
-  const { verdict, waitCondition } = effectiveVerdict(
-    claudeResult.verdict,
-    claudeResult.waitCondition,
-    guards,
-    stockData?.sector ?? null
-  );
+  const gate7Result = checkGate7(verdictResult, marketData);
+  const verdict = verdictResult.verdict;
+  const waitCondition = verdictResult.waitCondition;
 
-  // Discipline ledger: a BUY the system refused is a measurable non-event. Two paths —
-  // Claude's own BUY was quality-downgraded inside parseClaudeResponse, or it survived
-  // as BUY and a capital/sector guard downgraded it here. Fire-and-forget.
-  const ledgerBase = {
-    symbol: stockData.symbol,
-    refPrice: stockData.currentPrice,
-    stopLoss: claudeResult.stopLoss ?? stockData.suggestedStopLoss ?? null,
-    sector: stockData.sector ?? null,
-    capital: config.capital,
-    riskPct: config.riskPercentage,
-  };
-  if (claudeResult.downgradedFrom === VERDICTS.BUY) {
+  // Discipline ledger: a quality downgrade (target geometry too tight, enforced inside
+  // decideVerdict) is shared signal-quality info — every watcher would have been refused
+  // the same way, so userId stays null.
+  if (verdictResult.downgradedFrom === VERDICTS.BUY) {
     recordBlockedTrade({
-      ...ledgerBase,
+      symbol: stockData.symbol,
       blockType: 'QUALITY_DOWNGRADE',
-      reason: claudeResult.downgradeReason ?? waitCondition,
-    }).catch(() => {});
-  } else if (claudeResult.verdict === VERDICTS.BUY && verdict !== VERDICTS.BUY) {
-    recordBlockedTrade({
-      ...ledgerBase,
-      blockType: waitCondition?.startsWith('Sector cap') ? 'SECTOR_CAP' : 'CAPITAL_GUARD',
-      reason: waitCondition,
+      reason: verdictResult.downgradeReason ?? waitCondition,
+      refPrice: stockData.currentPrice,
+      stopLoss: verdictResult.stopLoss ?? stockData.suggestedStopLoss ?? null,
+      sector: stockData.sector ?? null,
+      capital: DEFAULT_CAPITAL,
+      riskPct: DEFAULT_RISK_PCT,
     }).catch(() => {});
   }
 
   let position = { shares: 0, capitalDeployed: 0, maxLoss: 0, maxProfit: 0 };
   if (verdict === VERDICTS.BUY) {
-    const entry = claudeResult.entryZone?.high ?? stockData.suggestedEntry ?? 0;
-    const sl = claudeResult.stopLoss ?? stockData.suggestedStopLoss ?? entry * 0.97;
-    const t2 = claudeResult.target2 ?? stockData.suggestedTarget2 ?? entry * 1.06;
+    const entry = verdictResult.entryZone?.high ?? stockData.suggestedEntry ?? 0;
+    const sl = verdictResult.stopLoss ?? stockData.suggestedStopLoss ?? entry * 0.97;
+    const t2 = verdictResult.target2 ?? stockData.suggestedTarget2 ?? entry * 1.06;
 
     // Market mode trims risk in CAUTION (×0.5) / MIXED narrow-rally (×0.7)
-    let effectiveRiskPct = config.riskPercentage * sizeFactor;
+    let effectiveRiskPct = DEFAULT_RISK_PCT * sizeFactor;
 
     // NEW: Scale position size by Simons score confidence
     // High Simons = stronger setup = larger position
@@ -300,12 +354,12 @@ async function processCandidate(candidate, marketData, config, guards, metrics, 
     const simonsMultiplier = simonsScore >= 85 ? 1.25 : simonsScore >= 75 ? 1.0 : 0.75;
     effectiveRiskPct *= simonsMultiplier;
 
-    const sized = computePositionSize(entry, sl, config.capital, effectiveRiskPct);
+    const sized = computePositionSize(entry, sl, DEFAULT_CAPITAL, effectiveRiskPct);
     position = { ...sized, maxProfit: round2(sized.shares * (t2 - entry)) };
   }
 
   const { action, signal } = await saveSignal({
-    claudeResult,
+    claudeResult: verdictResult, // signalManager's field name — same shape, now deterministic
     stockData,
     gateResult,
     marketData,
@@ -317,22 +371,24 @@ async function processCandidate(candidate, marketData, config, guards, metrics, 
     gate7Result,
     simonOverride: candidate.simonOverride ?? null,
   });
-  const decision = { symbol: stockData.symbol, verdict, confidence: claudeResult.confidence };
+  const decision = { symbol: stockData.symbol, verdict, confidence: verdictResult.confidence };
   if (action === 'duplicate') return decision;
 
-  emitEvent(SOCKET_EVENTS.SIGNAL_NEW, signal.toObject ? signal.toObject() : signal);
+  emitGlobal(SOCKET_EVENTS.SIGNAL_NEW, signal.toObject ? signal.toObject() : signal);
   metrics.signalsSaved += 1;
   scanState.recordSignal(verdict, stockData.symbol);
   if (verdict === VERDICTS.BUY) {
     metrics.buySignals += 1;
+    const signalObj = signal.toObject ? signal.toObject() : signal;
     const notify = action === 'upgraded' ? sendWaitToBuyUpgrade : sendBuyAlert;
-    notify(signal).catch((e) =>
+    // notifier.js internally fans out to every user watching this symbol.
+    notify(signalObj).catch((e) =>
       logger.error(`Notify failed for ${stockData.symbol}`, { error: e.message })
     );
-    // Auto-open a paper trade (opt-in + paper-mode only) so BUYs build a forward track
-    // record for calibration. Fire-and-forget; it self-gates on guards and never blocks.
-    autoOpenPaperTrade(signal.toObject ? signal.toObject() : signal, config).catch((e) =>
-      logger.error(`autoOpenPaperTrade failed for ${stockData.symbol}`, { error: e.message })
+    // Per-user guard check + auto-open (opt-in + paper-mode only), for every user
+    // watching this symbol. Fire-and-forget; never blocks the scan.
+    applyPerUserActioning(signalObj, marketData.marketMode).catch((e) =>
+      logger.error(`applyPerUserActioning failed for ${stockData.symbol}`, { error: e.message })
     );
   }
   return decision;
@@ -459,13 +515,15 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
     errors: 0,
   };
   try {
-    const config = await Config.findOne().lean();
-    if (!config) {
-      logger.warn('runFullScan: no Config — run db:seed first');
+    // One scan cycle covers the union of every user's watchlist — Claude analysis is
+    // shared, so it's called once per stock no matter how many users watch it.
+    const configs = await Config.find().lean();
+    if (!configs.length) {
+      logger.warn('runFullScan: no users provisioned — run scripts/create-user.mjs first');
       return metrics;
     }
-    if (!forceRun && !config.scannerEnabled) {
-      logger.info('runFullScan: scanner disabled — skipping');
+    if (!forceRun && !configs.some((c) => c.scannerEnabled)) {
+      logger.info('runFullScan: scanner disabled for every user — skipping');
       return metrics;
     }
     if (!forceRun && !isMarketOpen()) {
@@ -475,12 +533,15 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
 
     scanState.startScan({ scanType: forceRun ? 'MANUAL' : 'LIVE' });
 
+    // Captured before getMarketHealth() persists the new mode, so the comparison below
+    // is pre-scan vs. post-scan (getMarketHealth's own transition alert uses the same
+    // read internally — this one drives the socket emit, which is scanPipeline's job).
+    const prevMode = (await MarketState.findOne().select('marketMode').lean())?.marketMode;
     const health = await getMarketHealth();
 
     // Bear-mode transition alert (only on first entry, not on every BEAR scan)
-    const prevMode = config.marketMode;
     if (health.marketMode === MARKET_MODES.BEAR && prevMode !== MARKET_MODES.BEAR) {
-      emitEvent(SOCKET_EVENTS.MARKET_BEARMODE, {
+      emitGlobal(SOCKET_EVENTS.MARKET_BEARMODE, {
         marketMode: health.marketMode,
         timestamp: new Date().toISOString(),
       });
@@ -489,7 +550,7 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
       );
     }
     if ((health.vix ?? 0) > 20) {
-      emitEvent(SOCKET_EVENTS.MARKET_VIXSPIKE, {
+      emitGlobal(SOCKET_EVENTS.MARKET_VIXSPIKE, {
         vix: health.vix,
         timestamp: new Date().toISOString(),
       });
@@ -497,8 +558,6 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
         logger.error('sendVixSpikeAlert failed', { error: e.message })
       );
     }
-    // Persist market mode so the next scan can detect mode transitions
-    Config.updateOne({}, { $set: { marketMode: health.marketMode } }).catch(() => {});
 
     // Emit flat shape so MarketStatusBar/MarketPulseStrip can read niftyPrice directly.
     // health.nifty50.dayChangePct is % change; derive absolute change from price + pct.
@@ -506,7 +565,7 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
     const _niftyChange = _n.price != null && _n.dayChangePct != null
       ? round2(_n.price * _n.dayChangePct / (100 + _n.dayChangePct))
       : null;
-    emitEvent(SOCKET_EVENTS.MARKET_UPDATE, {
+    emitGlobal(SOCKET_EVENTS.MARKET_UPDATE, {
       niftyPrice:     _n.price         ?? null,
       niftyChange:    _niftyChange,
       niftyChangePct: _n.dayChangePct   ?? null,
@@ -529,7 +588,7 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
       );
       const durationMs = Date.now() - start;
       scanState.endScan({ ...metrics, durationMs, marketMode: health.marketMode });
-      emitEvent(SOCKET_EVENTS.SCAN_COMPLETE, {
+      emitGlobal(SOCKET_EVENTS.SCAN_COMPLETE, {
         ...metrics,
         durationMs,
         marketMode: health.marketMode,
@@ -548,8 +607,10 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
     marketData.topSectors = signals.topSectors;
     marketData.bottomSectors = signals.bottomSectors;
 
-    const guards = await resolveGuards(config, health.marketMode);
-    const watchlistSymbols = (config.watchlist ?? []).map((w) => w.symbol);
+    // Union of every user's watchlist — the shared discovery run covers all of them at once.
+    const watchlistSymbols = [
+      ...new Set(configs.flatMap((c) => (c.watchlist ?? []).map((w) => w.symbol))),
+    ];
     // Drive the live progress bar through the (long) discovery phase: phase notes during
     // screening/analysis, then a per-stock tick as each survivor is scored through the gates.
     const onProgress = {
@@ -560,8 +621,8 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
     const { candidates, funnel, evaluated, screenedOut } = await runStockDiscovery({
       marketData,
       watchlistSymbols,
-      capital: config.capital,
-      riskPct: config.riskPercentage,
+      capital: DEFAULT_CAPITAL,
+      riskPct: DEFAULT_RISK_PCT,
       onProgress,
       ...(tiers ? { tiers } : {}),
       ...(maxAnalyze ? { maxAnalyze } : {}),
@@ -569,9 +630,10 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
     metrics.stocksScanned = candidates.length;
 
     // Discipline ledger: hard-blocked NEAR-candidates only (5+ gates passed, so they'd
-    // have reached Claude but for the hard block). Recording every rejection would
-    // inflate the ledger with trades nobody would have taken. Fire-and-forget; the
-    // per-session unique index absorbs the 15-minute scan repeats.
+    // have reached Claude but for the hard block). Shared signal-quality info (every
+    // watcher would have been hard-blocked the same way) — userId stays null. Recording
+    // every rejection would inflate the ledger with trades nobody would have taken.
+    // Fire-and-forget; the per-session unique index absorbs the 15-minute scan repeats.
     for (const e of evaluated ?? []) {
       if (e.hardBlockFired && e.gatesPassed >= GATES_REQUIRED_FOR_CLAUDE && e.currentPrice > 0) {
         recordBlockedTrade({
@@ -581,14 +643,15 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
           refPrice: e.currentPrice,
           stopLoss: e.suggestedStopLoss ?? null,
           sector: e.sector ?? null,
-          capital: config.capital,
-          riskPct: config.riskPercentage,
+          capital: DEFAULT_CAPITAL,
+          riskPct: DEFAULT_RISK_PCT,
         }).catch(() => {});
       }
     }
 
-    // Claude runs on the top picks only — its own counted phase so the bar refills 0→100%.
-    scanState.beginPhase('claude', candidates.length, `Running AI analysis on top ${candidates.length} pick(s)…`);
+    // Verdicts run on the top picks only — its own counted phase so the bar refills 0→100%.
+    // (Phase key 'claude' kept for UI compat; the work is now the deterministic engine.)
+    scanState.beginPhase('claude', candidates.length, `Computing verdicts for top ${candidates.length} pick(s)…`);
 
     const decisions = await runWithConcurrency(
       candidates,
@@ -598,8 +661,6 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
           const decision = await processCandidate(
             candidate,
             marketData,
-            config,
-            guards,
             metrics,
             health.positionSizeFactor
           );
@@ -639,7 +700,7 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
       durationMs,
       marketMode: health.marketMode,
     });
-    emitEvent(SOCKET_EVENTS.SCAN_COMPLETE, {
+    emitGlobal(SOCKET_EVENTS.SCAN_COMPLETE, {
       ...metrics,
       durationMs,
       marketMode: health.marketMode,
@@ -669,13 +730,13 @@ export const runFullScan = async ({ forceRun = false, tiers, maxAnalyze } = {}) 
 export const runEodPrep = async ({ forceRun = false } = {}) => {
   const start = Date.now();
   try {
-    const config = await Config.findOne().lean();
-    if (!config) {
-      logger.warn('runEodPrep: no Config — run db:seed first');
+    const configs = await Config.find().lean();
+    if (!configs.length) {
+      logger.warn('runEodPrep: no users provisioned — run scripts/create-user.mjs first');
       return { candidates: 0 };
     }
-    if (!forceRun && !config.scannerEnabled) {
-      logger.info('runEodPrep: scanner disabled — skipping');
+    if (!forceRun && !configs.some((c) => c.scannerEnabled)) {
+      logger.info('runEodPrep: scanner disabled for every user — skipping');
       return { candidates: 0 };
     }
     if (!forceRun && !isTradingDay()) {
@@ -691,12 +752,14 @@ export const runEodPrep = async ({ forceRun = false } = {}) => {
     marketData.topSectors = signals.topSectors;
     marketData.bottomSectors = signals.bottomSectors;
 
-    const watchlistSymbols = (config.watchlist ?? []).map((w) => w.symbol);
+    const watchlistSymbols = [
+      ...new Set(configs.flatMap((c) => (c.watchlist ?? []).map((w) => w.symbol))),
+    ];
     const { candidates, funnel, evaluated, screenedOut } = await runStockDiscovery({
       marketData,
       watchlistSymbols,
-      capital: config.capital,
-      riskPct: config.riskPercentage,
+      capital: DEFAULT_CAPITAL,
+      riskPct: DEFAULT_RISK_PCT,
     });
 
     const watchlist = candidates
@@ -745,7 +808,7 @@ export const runEodPrep = async ({ forceRun = false } = {}) => {
       candidates: watchlist,
     }).catch((e) => logger.error('sendWatchlistPrep failed', { error: e.message }));
 
-    emitEvent(SOCKET_EVENTS.SCAN_COMPLETE, {
+    emitGlobal(SOCKET_EVENTS.SCAN_COMPLETE, {
       scanType: 'EOD_PREP',
       watchlistCount: watchlist.length,
       marketMode: health.marketMode,

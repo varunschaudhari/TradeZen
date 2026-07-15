@@ -5,7 +5,7 @@
  * Requires all three services to be running:
  *   • MongoDB         (localhost:27017 or Atlas)
  *   • Python service  (localhost:8001)
- *   • Node server     (localhost:5000)
+ *   • Node server     (localhost:5001)
  *
  * Quick-start (local, no Docker):
  *   1. Start MongoDB:       docker run -d -p 27017:27017 mongo:7
@@ -20,12 +20,12 @@
  *   node test-integration.mjs
  *
  * Environment:
- *   SERVER_URL    default http://localhost:5000
+ *   SERVER_URL    default http://localhost:5001
  *   PYTHON_URL    default http://localhost:8001
  *   SCAN_WAIT_S   seconds to wait for scan results (default 90)
  */
 
-const SERVER = process.env.SERVER_URL ?? 'http://localhost:5000';
+const SERVER = process.env.SERVER_URL ?? 'http://localhost:5001';
 const PYTHON = process.env.PYTHON_URL ?? 'http://localhost:8001';
 const SCAN_WAIT = parseInt(process.env.SCAN_WAIT_S ?? '90', 10);
 
@@ -370,7 +370,7 @@ async function run() {
     console.log('  1. Set your ANTHROPIC_API_KEY in server/.env');
     console.log('  2. Set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID for alerts');
     console.log('  3. Set EMAIL_USER + EMAIL_PASS for email notifications');
-    console.log('  4. Open http://localhost:3000 (or docker-compose client) to see the dashboard');
+    console.log('  4. Open http://localhost:3001 (or docker-compose client) to see the dashboard');
     console.log('  5. Signals auto-scan every 15 min during market hours (9:15–15:30 IST weekdays)');
   }
 

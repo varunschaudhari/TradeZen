@@ -15,7 +15,7 @@
  */
 
 import mongoose from 'mongoose';
-import Config from '../models/Config.js';
+import MarketState from '../models/MarketState.js';
 import { logger } from '../config/logger.js';
 import { fetchMarketData } from './pythonBridge.js';
 import { sendBearModeAlert } from './notifier.js';
@@ -145,7 +145,7 @@ function buildHealthObject(market, classified) {
 }
 
 /**
- * Persist the latest mode + full snapshot to the Config singleton.
+ * Persist the latest mode + full snapshot to the shared MarketState singleton.
  * No-op (logged) when MongoDB is not connected so the service stays usable in tests.
  *
  * @param {object} health - Output of buildHealthObject
@@ -157,7 +157,7 @@ async function persistHealth(health) {
     return;
   }
   try {
-    await Config.updateOne(
+    await MarketState.updateOne(
       {},
       {
         $set: {
@@ -176,7 +176,8 @@ async function persistHealth(health) {
             capturedAt: new Date(),
           },
         },
-      }
+      },
+      { upsert: true }
     );
   } catch (err) {
     logger.error('marketHealth: failed to persist snapshot', { error: err.message });
@@ -191,8 +192,8 @@ async function persistHealth(health) {
 async function getPreviousMode() {
   if (mongoose.connection.readyState !== 1) return null;
   try {
-    const config = await Config.findOne().select('marketMode').lean();
-    return config?.marketMode ?? null;
+    const state = await MarketState.findOne().select('marketMode').lean();
+    return state?.marketMode ?? null;
   } catch (err) {
     logger.error('marketHealth: failed to read previous mode', { error: err.message });
     return null;
@@ -226,8 +227,8 @@ async function fallbackToCache() {
   let snapshot = null;
   if (mongoose.connection.readyState === 1) {
     try {
-      const config = await Config.findOne().select('lastMarketHealth').lean();
-      snapshot = config?.lastMarketHealth ?? null;
+      const state = await MarketState.findOne().select('lastMarketHealth').lean();
+      snapshot = state?.lastMarketHealth ?? null;
     } catch (err) {
       logger.error('marketHealth: failed to read cached snapshot', { error: err.message });
     }

@@ -11,14 +11,17 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import helmet from 'helmet';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import { connectDB } from './config/db.js';
 import { logger } from './config/logger.js';
 import { CLIENT_URL } from './config/constants.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { globalRateLimiter } from './middleware/rateLimiter.js';
+import { requireAuth } from './middleware/requireAuth.js';
 import { initSocketHandlers } from './socket/socketHandlers.js';
 import { startScheduler } from './scheduler/index.js';
+import authRouter from './routes/auth.js';
 import signalsRouter from './routes/signals.js';
 import tradesRouter from './routes/trades.js';
 import watchlistRouter from './routes/watchlist.js';
@@ -46,6 +49,7 @@ import gatesRouter from './routes/gates.js';
 import alertsRouter from './routes/alerts.js';
 import intradayRouter from './routes/intraday.js';
 import disciplineRouter from './routes/discipline.js';
+import holidaysRouter from './routes/holidays.js';
 
 dotenv.config();
 
@@ -58,9 +62,20 @@ const io = new Server(httpServer, {
 app.use(helmet());
 app.use(cors({ origin: CLIENT_URL, credentials: true }));
 app.use(express.json({ limit: '10kb' }));
+app.use(cookieParser());
+
+// Health checks are polled every 30s from EVERY open tab (useServiceHealth) regardless of
+// page — registered ahead of globalRateLimiter so that background presence-checking never
+// eats into the budget meant for actual user actions. Unauthenticated by design.
+app.get('/health', (_req, res) => res.json({ success: true, message: 'Server is healthy' }));
+app.use('/api/health', healthRouter);
+
 app.use(globalRateLimiter);
 
-app.get('/health', (_req, res) => res.json({ success: true, message: 'Server is healthy' }));
+// Auth routes must stay reachable without a session (login IS how you get one).
+// Everything registered after requireAuth below requires a valid session cookie.
+app.use('/api/auth', authRouter);
+app.use(requireAuth);
 
 app.use('/api/signals', signalsRouter);
 app.use('/api/trades', tradesRouter);
@@ -76,7 +91,6 @@ app.use('/api/quotes', quotesRouter);
 app.use('/api/stock', stockRouter);
 app.use('/api/stocks', stocksRouter);
 app.use('/api/universe', universeRouter);
-app.use('/api/health', healthRouter);
 app.use('/api/scanner', scannerRouter);
 app.use('/api/scan', scanRouter);
 app.use('/api/test', testRouter);
@@ -89,12 +103,13 @@ app.use('/api/gates', gatesRouter);
 app.use('/api/alerts', alertsRouter);
 app.use('/api/intraday', intradayRouter);
 app.use('/api/discipline', disciplineRouter);
+app.use('/api/holidays', holidaysRouter);
 
 app.use(errorHandler);
 
 initSocketHandlers(io);
 
-const PORT = process.env.PORT ?? 5000;
+const PORT = process.env.PORT ?? 5001;
 
 /**
  * Starts HTTP server after establishing MongoDB connection

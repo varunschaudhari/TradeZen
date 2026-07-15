@@ -248,6 +248,48 @@ const ModeTable = ({ results, modes }) => {
   );
 };
 
+/** What the CURRENT live strategy (decideVerdict, score ≥ HIGH) actually would have
+ * bought — vs. `overall`, which spans every gates-qualified candidate regardless of
+ * score. The gap between the two, plus the BUY/WAIT/SKIP split, is the score-
+ * reachability picture: how often does the composite score actually clear the HIGH bar. */
+const LiveStrategyPanel = ({ results, modes }) => {
+  const refMode = modes?.includes('adaptive') ? 'adaptive' : modes?.[0];
+  const live = results?.[refMode]?.liveStrategy;
+  const overall = results?.[refMode]?.overall;
+  const byVerdict = results?.[refMode]?.byVerdict ?? {};
+  const totalCandidates = (byVerdict.BUY ?? 0) + (byVerdict.WAIT ?? 0) + (byVerdict.SKIP ?? 0);
+  if (!live) return null;
+
+  return (
+    <div>
+      <div className="flex items-baseline gap-2 mb-3">
+        <h3 className="text-sm font-semibold text-slate-200">Live Strategy (score ≥ HIGH only)</h3>
+        <span className="text-xs text-slate-500">({refMode} mode) — what today's pipeline would actually have bought</span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+        <KpiCell label="BUY trades" value={live.trades} />
+        <KpiCell label="Win %" value={fmtPct(live.winRate)} positive={live.winRate >= 55} />
+        <KpiCell label="Avg R (net)" value={fmtR(live.avgRNet)} positive={live.avgRNet >= 0} negative={live.avgRNet < 0} />
+        <KpiCell label="Expectancy" value={fmtR(live.expectancy)} positive={live.expectancy >= 0} negative={live.expectancy < 0} />
+      </div>
+      {totalCandidates > 0 && (
+        <div className="text-xs text-slate-500 flex items-center gap-3 flex-wrap">
+          <span>Of {totalCandidates} gate-qualified candidates:</span>
+          <span className="text-emerald-400 font-mono">{byVerdict.BUY ?? 0} BUY</span>
+          <span className="text-wait font-mono">{byVerdict.WAIT ?? 0} WAIT</span>
+          <span className="text-slate-400 font-mono">{byVerdict.SKIP ?? 0} SKIP</span>
+          {overall?.trades > 0 && (
+            <span>
+              — score-qualified BUYs are {Math.round(((byVerdict.BUY ?? 0) / totalCandidates) * 100)}% of candidates
+              (vs. {overall.trades} simulated across every score band)
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const SCORE_BUCKETS = ['<50', '50-59', '60-69', '70+'];
 
 const BucketTable = ({ results, modes }) => {
@@ -793,6 +835,11 @@ export default function Backtest() {
                 period <span className="text-slate-300 font-mono">{wfResult.period}</span> ·
                 modes: <span className="text-slate-300 font-mono">{wfResult.modes?.join(', ')}</span>
               </p>
+
+              {/* Live-strategy reality check */}
+              <div className="card">
+                <LiveStrategyPanel results={wfResult.results} modes={wfResult.modes} />
+              </div>
 
               {/* Mode comparison */}
               <div className="card">

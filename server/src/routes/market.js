@@ -7,7 +7,7 @@
 
 import express from 'express';
 import { fetchMarketData } from '../services/pythonBridge.js';
-import Config from '../models/Config.js';
+import MarketState from '../models/MarketState.js';
 import { NSE_HOLIDAY_LIST } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 
@@ -29,9 +29,9 @@ function getNextHoliday() {
 // GET /api/market
 router.get('/', async (_req, res, next) => {
   try {
-    const [marketData, config] = await Promise.all([
+    const [marketData, state] = await Promise.all([
       fetchMarketData(),
-      Config.findOne().lean().catch(() => null),
+      MarketState.findOne().lean().catch(() => null),
     ]);
     // Flatten the nested Python response into the shape the frontend expects.
     // Python returns nifty50.price / nifty50.change / nifty50.changePct;
@@ -47,7 +47,7 @@ router.get('/', async (_req, res, next) => {
         bankNiftyPrice: b.price     ?? null,
         vix:            marketData?.vix     ?? null,
         adRatio:        marketData?.adRatio ?? null,
-        marketMode:     config?.marketMode  ?? null,
+        marketMode:     state?.marketMode  ?? null,
         nextHoliday:    getNextHoliday(),
       },
       message: 'Market data retrieved',

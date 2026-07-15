@@ -20,7 +20,7 @@ router.get('/:symbol', async (req, res, next) => {
 
     // Generate comprehensive analysis. Market data is fetched inside the service —
     // in parallel with stock detail on a cache miss, and skipped entirely on a cache hit.
-    const report = await generateAnalysisReport(symbol);
+    const report = await generateAnalysisReport(symbol, null, req.userId);
 
     res.json({
       success: true,

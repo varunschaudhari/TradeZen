@@ -14,9 +14,9 @@ import { logger } from '../config/logger.js';
 const router = express.Router();
 
 // GET /api/alerts
-router.get('/', async (_req, res, next) => {
+router.get('/', async (req, res, next) => {
   try {
-    const alerts = await PriceAlert.find().sort({ createdAt: -1 });
+    const alerts = await PriceAlert.find({ userId: req.userId }).sort({ createdAt: -1 });
     res.json({ success: true, data: alerts });
   } catch (err) {
     next(err);
@@ -36,6 +36,7 @@ router.post('/', async (req, res, next) => {
     }
 
     const alert = await PriceAlert.create({
+      userId:      req.userId,
       symbol:      String(symbol).toUpperCase().trim(),
       targetPrice: Number(targetPrice),
       direction,
@@ -52,7 +53,7 @@ router.post('/', async (req, res, next) => {
 // PATCH /api/alerts/:id/toggle
 router.patch('/:id/toggle', async (req, res, next) => {
   try {
-    const alert = await PriceAlert.findById(req.params.id);
+    const alert = await PriceAlert.findOne({ _id: req.params.id, userId: req.userId });
     if (!alert) return res.status(404).json({ success: false, error: 'Alert not found' });
 
     alert.active = !alert.active;
@@ -68,7 +69,7 @@ router.patch('/:id/toggle', async (req, res, next) => {
 // DELETE /api/alerts/:id
 router.delete('/:id', async (req, res, next) => {
   try {
-    const deleted = await PriceAlert.findByIdAndDelete(req.params.id);
+    const deleted = await PriceAlert.findOneAndDelete({ _id: req.params.id, userId: req.userId });
     if (!deleted) return res.status(404).json({ success: false, error: 'Alert not found' });
     res.json({ success: true, message: 'Alert deleted' });
   } catch (err) {

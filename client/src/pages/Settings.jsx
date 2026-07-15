@@ -115,15 +115,33 @@ const Settings = () => {
           />
         </div>
         <div>
-          <label className="text-xs text-slate-400 block mb-1">Max Simultaneous Trades</label>
+          <label className="text-xs text-slate-400 block mb-1">Max Simultaneous Trades — min 1, max 20</label>
           <input
             type="number"
             value={config.maxOpenTrades}
             onChange={(e) => update('maxOpenTrades', Number(e.target.value))}
             min={1}
-            max={10}
+            max={20}
             className="bg-surface-elevated border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-full focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
+        </div>
+        <div>
+          <label className="text-xs text-slate-400 block mb-1">
+            Max Capital Deployed (%) — min 10%, max 100%
+          </label>
+          <input
+            type="number"
+            value={config.maxCapitalDeployedPct}
+            onChange={(e) => update('maxCapitalDeployedPct', Number(e.target.value))}
+            min={10}
+            max={100}
+            step={1}
+            className="bg-surface-elevated border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-full focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <p className="text-[11px] text-slate-500 mt-1">
+            Absolute ceiling — the effective cap still shrinks further in a weaker market regime
+            (e.g. 50% in CAUTION, 20% in BEAR), whichever is lower.
+          </p>
         </div>
 
         {/* Auto paper-trade opt-in */}
@@ -133,7 +151,8 @@ const Settings = () => {
             <p className="text-[11px] text-slate-500 mt-0.5">
               Opens a <span className="text-slate-300">paper</span> position for every BUY (never a real
               order) so signals build a forward track record for calibration. Respects the max-positions
-              and 60% capital caps, and exits via SL/T1/T2 or a {`${21}`}-day max hold.
+              and max-capital-deployed caps above (regime-tiered down further in a weaker market), and
+              exits via SL/T1/T2 or a {`${21}`}-day max hold.
             </p>
           </div>
           <button

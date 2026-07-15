@@ -154,14 +154,14 @@ const ONBOARDING_STEPS = [
   {
     n: '2',
     title: 'Let the 8-gate system filter setups',
-    body: 'Nifty trend, RSI, volume, risk:reward and 4 more gates must pass before Claude even gets a look.',
+    body: 'Nifty trend, RSI, volume, risk:reward and 4 more gates must pass before a verdict is even computed.',
     color: 'text-amber-400',
     bg: 'bg-amber-500/10 border-amber-500/25',
   },
   {
     n: '3',
     title: 'BUY signals appear here',
-    body: 'When all gates pass and Claude returns HIGH confidence, a BUY signal lands on this dashboard in real time.',
+    body: 'When all gates pass and the composite score reaches HIGH confidence, a BUY signal lands on this dashboard in real time.',
     color: 'text-emerald-400',
     bg: 'bg-emerald-500/10 border-emerald-500/25',
   },

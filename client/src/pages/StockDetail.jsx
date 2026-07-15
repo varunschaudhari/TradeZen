@@ -503,12 +503,12 @@ const StockDetail = () => {
               {/* Source label */}
               <p className="text-[10px] text-slate-600 mt-3">
                 {hasSignal
-                  ? `Claude signal · ${signal.gatesPassed ?? 0}/8 gates passed · ${
+                  ? `Scan signal · ${signal.gatesPassed ?? 0}/8 gates passed · ${
                       signal.createdAt
                         ? new Date(signal.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
                         : ''
                     }`
-                  : 'Python suggested levels — no Claude signal on record for this stock'}
+                  : 'Python suggested levels — no scan signal on record for this stock'}
               </p>
             </div>
           </div>
@@ -655,9 +655,9 @@ const StockDetail = () => {
         </Accordion>
       )}
 
-      {/* ── 7. Claude reasoning + key risks (collapsible) ───────────────── */}
+      {/* ── 7. Signal reasoning + key risks (collapsible) ───────────────── */}
       {signal?.reasoning && (
-        <Accordion title="Claude's reasoning">
+        <Accordion title="Signal reasoning">
           <div className="space-y-4">
             <div>
               <p className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">Analysis</p>

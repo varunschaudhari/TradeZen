@@ -14,7 +14,7 @@ const router = express.Router();
 // POST /api/test/telegram  body: { message?: string }
 router.post('/telegram', async (req, res, next) => {
   try {
-    const result = await sendTestMessage(req.body?.message);
+    const result = await sendTestMessage(req.body?.message, req.userId);
     if (!result.ok) {
       return res.status(503).json({ success: false, error: result.reason, code: 503 });
     }

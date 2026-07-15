@@ -113,7 +113,8 @@ class QuotesResponse(BaseModel):
 
 
 class IntradaySnapshot(BaseModel):
-    """Latest-session 5m snapshot for one symbol (ORB scanner input)."""
+    """Latest-session 5m snapshot for one symbol (intraday scanner input — ORB,
+    VWAP-reversion, and momentum-continuation strategies all read this)."""
 
     sessionDate: Optional[str] = None  # YYYY-MM-DD of the session the snapshot covers
     lastPrice: Optional[float] = None
@@ -123,6 +124,8 @@ class IntradaySnapshot(BaseModel):
     orLow: Optional[float] = None
     orComplete: Optional[bool] = None
     vwap: Optional[float] = None
+    vwapStdDev: Optional[float] = None  # stdev of (typical price − running VWAP) today
+    ema9: Optional[float] = None  # 5m-bar EMA(9), warmed up across the multi-session frame
     cumVolume: Optional[float] = None
     relVolume: Optional[float] = None  # time-of-day-adjusted vs prior sessions
     dayHigh: Optional[float] = None

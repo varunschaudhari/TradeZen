@@ -4,8 +4,10 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import TradeCard from '../components/TradeCard.jsx';
+import TradeCard, { ACTION_STYLES } from '../components/TradeCard.jsx';
+import PositionsTable from '../components/PositionsTable.jsx';
 import LogTradeModal from '../components/LogTradeModal.jsx';
 import IntradayPanel from '../components/IntradayPanel.jsx';
 import useSocket from '../hooks/useSocket.js';
@@ -15,6 +17,40 @@ import { formatCurrency, formatPercent, timeAgo } from '../utils/formatters.js';
 
 const POLL_MS         = 45_000; // MongoDB position fetch
 const PRICE_REFRESH_MS = 30_000; // live price push during market hours
+
+const ACTIONS = ['EXIT_RISK', 'BOOK_T2', 'BOOK_T1', 'TRAIL_STOP', 'HOLD'];
+const URGENCY_RANK = { EXIT_RISK: 0, BOOK_T2: 1, BOOK_T1: 2, TRAIL_STOP: 3, HOLD: 4 };
+const SORT_OPTIONS = [
+  { key: 'urgency', label: 'Urgency', dir: 'asc' },
+  { key: 'pnlPct', label: 'P&L %', dir: 'desc' },
+  { key: 'rMultiple', label: 'R-Multiple', dir: 'desc' },
+  { key: 'daysHeld', label: 'Days Held', dir: 'desc' },
+  { key: 'slDistance', label: 'SL Distance', dir: 'asc' },
+];
+const EMPTY_FILTERS = { sector: '', actions: [], pnlStatus: '', symbol: '' };
+
+const sortVal = (t, key) => {
+  switch (key) {
+    case 'urgency': return URGENCY_RANK[t.live?.action] ?? 4;
+    case 'pnlPct': return t.unrealizedPnlPct ?? 0;
+    case 'rMultiple': return t.live?.rMultiple ?? 0;
+    case 'daysHeld': return t.entryDate ? Date.now() - new Date(t.entryDate).getTime() : 0;
+    case 'slDistance': return t.live?.slDistancePct ?? Infinity;
+    default: return 0;
+  }
+};
+
+const Chip = ({ active, onClick, children, activeClass = 'bg-accent/20 text-accent border-accent/40' }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-all duration-150 ${
+      active ? activeClass : 'bg-surface-elevated/50 text-slate-400 border-slate-700 hover:text-slate-200 hover:border-slate-600'
+    }`}
+  >
+    {children}
+  </button>
+);
 
 const isMarketHours = () => {
   const nowIST = new Date(Date.now() + 5.5 * 3600 * 1000);
@@ -100,6 +136,10 @@ const Positions = () => {
   const [priceRefreshing, setPriceRefreshing]  = useState(false);
   const [monitoring,      setMonitoring]       = useState(false);
   const [sparklines,      setSparklines]       = useState({});
+  const [viewMode,        setViewMode]         = useState('cards');
+  const [filters,         setFilters]          = useState(EMPTY_FILTERS);
+  const [sortKey,         setSortKey]          = useState('urgency');
+  const [sectorConcentration, setSectorConcentration] = useState(null);
   const { subscribe } = useSocket();
 
   /* Keep a stable ref to current trades for the price-refresh closure */
@@ -108,10 +148,14 @@ const Positions = () => {
 
   const loadTrades = useCallback(async () => {
     try {
-      const res = await tradesApi.getLive();
+      const [res, sectorRes] = await Promise.all([
+        tradesApi.getLive(),
+        tradesApi.getSectorConcentration().catch(() => null),
+      ]);
       setTrades(res.data?.positions ?? []);
       setSummary(res.data?.summary ?? null);
       setUpdatedAt(res.data?.summary?.updatedAt ?? new Date().toISOString());
+      setSectorConcentration(sectorRes?.data ?? null);
       setError(null);
     } catch (err) {
       setError(err.message);
@@ -314,6 +358,41 @@ const Positions = () => {
   const atRisk           = summary?.atRisk ?? 0;
   const pnlColor         = totalUnrealized >= 0 ? 'text-bull' : 'text-bear';
 
+  /* ── Filters + sort — applied client-side over the live positions list ──── */
+  const distinctSectors = useMemo(
+    () => [...new Set(trades.map((t) => t.sector).filter(Boolean))].sort(),
+    [trades]
+  );
+
+  const filteredTrades = useMemo(() => {
+    const { sector, actions, pnlStatus, symbol } = filters;
+    return trades.filter((t) => {
+      if (sector && t.sector !== sector) return false;
+      if (actions.length && !actions.includes(t.live?.action ?? 'HOLD')) return false;
+      if (pnlStatus === 'WIN' && (t.unrealizedPnl ?? 0) <= 0) return false;
+      if (pnlStatus === 'LOSS' && (t.unrealizedPnl ?? 0) > 0) return false;
+      if (symbol && !t.symbol?.toLowerCase().includes(symbol.toLowerCase())) return false;
+      return true;
+    });
+  }, [trades, filters]);
+
+  const sortedTrades = useMemo(() => {
+    const opt = SORT_OPTIONS.find((o) => o.key === sortKey) ?? SORT_OPTIONS[0];
+    const dirMult = opt.dir === 'asc' ? 1 : -1;
+    return [...filteredTrades].sort((a, b) => (sortVal(a, sortKey) - sortVal(b, sortKey)) * dirMult);
+  }, [filteredTrades, sortKey]);
+
+  const activeFilterCount =
+    (filters.sector ? 1 : 0) + filters.actions.length + (filters.pnlStatus ? 1 : 0) + (filters.symbol ? 1 : 0);
+
+  const toggleAction = (action) =>
+    setFilters((f) => ({
+      ...f,
+      actions: f.actions.includes(action) ? f.actions.filter((a) => a !== action) : [...f.actions, action],
+    }));
+
+  const overweightSector = sectorConcentration?.sectors?.find((s) => s.pct >= (sectorConcentration.warningThreshold ?? 40));
+
   /* ── Render ───────────────────────────────────────────────────────────── */
   if (loading) {
     return (
@@ -425,7 +504,97 @@ const Positions = () => {
         </div>
       )}
 
-      {/* Trade cards */}
+      {/* Sector concentration nudge */}
+      {overweightSector && (
+        <div className="card border-wait/40 bg-wait/10 text-wait text-sm flex items-center gap-2 flex-wrap">
+          <span>⚠</span>
+          <span className="flex-1">
+            <strong>{overweightSector.sector}</strong> is {overweightSector.pct.toFixed(1)}% of deployed capital —
+            over the {sectorConcentration.warningThreshold}% concentration guideline.
+          </span>
+          <Link to="/risk-attribution" className="text-xs underline underline-offset-2 hover:text-slate-200 shrink-0">
+            View Risk &amp; Attribution →
+          </Link>
+        </div>
+      )}
+
+      {/* Filter bar */}
+      {trades.length > 0 && (
+        <div className="glass rounded-xl p-3.5 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wide mr-1">Action</span>
+            {ACTIONS.map((a) => (
+              <Chip key={a} active={filters.actions.includes(a)} onClick={() => toggleAction(a)}>
+                {ACTION_STYLES[a].label}
+              </Chip>
+            ))}
+            <span className="w-px h-4 bg-slate-700 mx-1" />
+            <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wide mr-1">P&amp;L</span>
+            {[['', 'All'], ['WIN', 'Winners'], ['LOSS', 'Losers']].map(([val, label]) => (
+              <Chip
+                key={val || 'all'}
+                active={filters.pnlStatus === val}
+                onClick={() => setFilters((f) => ({ ...f, pnlStatus: val }))}
+                activeClass={val === 'WIN' ? 'bg-bull/20 text-bull border-bull/40' : val === 'LOSS' ? 'bg-bear/20 text-bear border-bear/40' : undefined}
+              >
+                {label}
+              </Chip>
+            ))}
+            {activeFilterCount > 0 && (
+              <button
+                onClick={() => setFilters(EMPTY_FILTERS)}
+                className="ml-auto text-xs text-slate-500 hover:text-slate-300 underline underline-offset-2"
+              >
+                Clear filters ({activeFilterCount})
+              </button>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={filters.sector}
+              onChange={(e) => setFilters((f) => ({ ...f, sector: e.target.value }))}
+              className="input !py-1.5 text-xs w-auto"
+            >
+              <option value="">All sectors</option>
+              {distinctSectors.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <input
+              type="text"
+              placeholder="Search symbol…"
+              value={filters.symbol}
+              onChange={(e) => setFilters((f) => ({ ...f, symbol: e.target.value }))}
+              className="input w-36 !py-1.5 text-xs"
+            />
+            <select
+              value={sortKey}
+              onChange={(e) => setSortKey(e.target.value)}
+              className="input !py-1.5 text-xs w-auto"
+              title="Sort positions by"
+            >
+              {SORT_OPTIONS.map((o) => <option key={o.key} value={o.key}>Sort: {o.label}</option>)}
+            </select>
+            <div className="ml-auto flex items-center gap-1 bg-surface-elevated/50 border border-slate-700 rounded-lg p-0.5">
+              <button
+                onClick={() => setViewMode('cards')}
+                className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${viewMode === 'cards' ? 'bg-accent/20 text-accent' : 'text-slate-400 hover:text-slate-200'}`}
+              >
+                Cards
+              </button>
+              <button
+                onClick={() => setViewMode('table')}
+                className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${viewMode === 'table' ? 'bg-accent/20 text-accent' : 'text-slate-400 hover:text-slate-200'}`}
+              >
+                Table
+              </button>
+            </div>
+            <span className="text-xs text-slate-500">
+              {sortedTrades.length} of {trades.length}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Trade positions */}
       {trades.length === 0 ? (
         <div className="card text-center py-16">
           <p className="text-4xl mb-3">📋</p>
@@ -435,9 +604,23 @@ const Positions = () => {
             or wait for a BUY signal on the Dashboard.
           </p>
         </div>
+      ) : sortedTrades.length === 0 ? (
+        <div className="card text-center py-16">
+          <p className="text-4xl mb-3">🔍</p>
+          <p className="text-slate-400 font-medium">No positions match these filters</p>
+        </div>
+      ) : viewMode === 'table' ? (
+        <PositionsTable
+          trades={sortedTrades}
+          onMarkT1Hit={handleT1Hit}
+          onMarkSLHit={handleSLHit}
+          onMarkClosed={handleCloseOpen}
+          onQuickClose={handleQuickClose}
+          slWarnings={slWarnings}
+        />
       ) : (
         <div className="stagger-grid grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {trades.map((trade) => (
+          {sortedTrades.map((trade) => (
             <div
               key={trade._id}
               className={slWarnings.has(String(trade._id)) ? 'ring-2 ring-bear rounded-xl' : ''}

@@ -18,8 +18,13 @@ router.get('/', async (req, res, next) => {
   try {
     const limit = Math.min(parseInt(req.query.limit ?? '30', 10) || 30, 200);
     const [summary, recent] = await Promise.all([
-      getLedgerSummary(),
-      BlockedTrade.find().sort({ blockedAt: -1 }).limit(limit).lean(),
+      getLedgerSummary(req.userId),
+      // Show this user's own capacity-guard blocks (userId set) plus the shared
+      // signal-quality blocks (userId: null) — never filter the shared entries out.
+      BlockedTrade.find({ $or: [{ userId: req.userId }, { userId: null }] })
+        .sort({ blockedAt: -1 })
+        .limit(limit)
+        .lean(),
     ]);
     res.json({ success: true, data: { summary, recent }, message: 'Discipline ledger' });
   } catch (err) {

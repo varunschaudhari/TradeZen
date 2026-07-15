@@ -81,7 +81,9 @@ def fetch_ohlcv(
         Normalized DataFrame with columns [open, high, low, close, volume],
         or None if data is unavailable, insufficient, or stale
     """
-    ticker = f"{symbol}{NSE_SUFFIX}"
+    # Index tickers (^NSEI, ^NSEBANK, ^INDIAVIX, ...) are already valid Yahoo symbols —
+    # appending NSE_SUFFIX (.NS) turns them into something Yahoo doesn't recognize (404).
+    ticker = symbol if symbol.startswith("^") else f"{symbol}{NSE_SUFFIX}"
     logger.debug("Fetching %s | period=%s interval=%s", ticker, period, interval)
 
     try:
@@ -150,7 +152,7 @@ def fetch_ticker_info(symbol: str) -> dict:
         earnings_timestamp, prev_close, current_price.
         Returns empty dict on any failure.
     """
-    ticker = f"{symbol}{NSE_SUFFIX}"
+    ticker = symbol if symbol.startswith("^") else f"{symbol}{NSE_SUFFIX}"
     try:
         info = yf.Ticker(ticker).info
         return {

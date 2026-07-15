@@ -6,8 +6,8 @@ An AI-powered NSE/BSE swing trading signal platform built with MERN stack + Pyth
 
 ```
 swing-trader/
-├── client/          React 18 + Vite + Tailwind (port 3000)
-├── server/          Node.js 20 + Express 5 + socket.io (port 5000)
+├── client/          React 18 + Vite + Tailwind (port 3001)
+├── server/          Node.js 20 + Express 5 + socket.io (port 5001)
 ├── python-service/  FastAPI + yfinance + pandas-ta (port 8001)
 └── docker-compose.yml
 ```
@@ -39,7 +39,7 @@ cp client/.env.local.example client/.env.local
 docker-compose up -d
 
 # 5. Open the dashboard
-open http://localhost:3000
+open http://localhost:3001
 ```
 
 ## Manual Setup (Development)

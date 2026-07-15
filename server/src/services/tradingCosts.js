@@ -46,18 +46,26 @@ const GST_PCT = 18; // on brokerage + exchange txn + SEBI
 /**
  * Itemized round-trip cost estimate for one trade (pure).
  *
- * @param {number} entry - Entry price
- * @param {number} exit - Exit price
+ * STT/stamp-duty are charged per LEG (buy leg vs sell leg), not per entry/exit label —
+ * for a SHORT, the opening leg IS the sell (short-sell) and the closing leg IS the buy
+ * (cover), the reverse of a LONG. Getting this backwards would charge intraday STT
+ * (sell-side only) on the wrong leg and misprice every short trade's cost.
+ *
+ * @param {number} entry - Entry price (opening leg)
+ * @param {number} exit - Exit price (closing leg)
  * @param {number} shares - Quantity
  * @param {'DELIVERY'|'INTRADAY'} [mode='DELIVERY']
+ * @param {'LONG'|'SHORT'} [direction='LONG'] - LONG: buy@entry, sell@exit. SHORT: sell@entry, buy@exit.
  * @returns {{ brokerage:number, stt:number, exchangeTxn:number, sebiFees:number,
  *   stampDuty:number, gst:number, charges:number, slippage:number, total:number }}
  *   `charges` = statutory+broker; `total` = charges + slippage.
  */
-export function estimateTradeCosts(entry, exit, shares, mode = 'DELIVERY') {
+export function estimateTradeCosts(entry, exit, shares, mode = 'DELIVERY', direction = 'LONG') {
   const r = RATES[mode] ?? RATES.DELIVERY;
-  const buyValue = (entry ?? 0) * (shares ?? 0);
-  const sellValue = (exit ?? 0) * (shares ?? 0);
+  const entryValue = (entry ?? 0) * (shares ?? 0);
+  const exitValue = (exit ?? 0) * (shares ?? 0);
+  const buyValue = direction === 'SHORT' ? exitValue : entryValue;
+  const sellValue = direction === 'SHORT' ? entryValue : exitValue;
   if (!(buyValue > 0) || !(sellValue > 0)) {
     return { brokerage: 0, stt: 0, exchangeTxn: 0, sebiFees: 0, stampDuty: 0, gst: 0, charges: 0, slippage: 0, total: 0 };
   }
@@ -91,14 +99,15 @@ export function estimateTradeCosts(entry, exit, shares, mode = 'DELIVERY') {
 /**
  * Net P&L after estimated costs (pure convenience).
  *
- * @param {number} grossPnl - (exit − entry) × shares
+ * @param {number} grossPnl - (exit − entry) × shares for LONG, (entry − exit) × shares for SHORT
  * @param {number} entry
  * @param {number} exit
  * @param {number} shares
  * @param {'DELIVERY'|'INTRADAY'} [mode='DELIVERY']
+ * @param {'LONG'|'SHORT'} [direction='LONG']
  * @returns {{ netPnl:number, costs:object }}
  */
-export function netAfterCosts(grossPnl, entry, exit, shares, mode = 'DELIVERY') {
-  const costs = estimateTradeCosts(entry, exit, shares, mode);
+export function netAfterCosts(grossPnl, entry, exit, shares, mode = 'DELIVERY', direction = 'LONG') {
+  const costs = estimateTradeCosts(entry, exit, shares, mode, direction);
   return { netPnl: round2((grossPnl ?? 0) - costs.total), costs };
 }

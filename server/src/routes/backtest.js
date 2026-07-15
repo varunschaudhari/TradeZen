@@ -107,7 +107,7 @@ router.post(
       let { symbols, period, modes, useWatchlist } = req.body;
 
       if (useWatchlist || !symbols.length) {
-        const config = await Config.findOne();
+        const config = await Config.findOne({ userId: req.userId });
         symbols = config?.watchlist?.map((w) => w.symbol) ?? [];
       }
 
@@ -140,7 +140,7 @@ router.post(
       let { symbols, period, holdMode, useWatchlist } = req.body;
 
       if (useWatchlist || !symbols.length) {
-        const config = await Config.findOne();
+        const config = await Config.findOne({ userId: req.userId });
         symbols = config?.watchlist?.map((w) => w.symbol) ?? [];
       }
 

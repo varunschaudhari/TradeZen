@@ -15,16 +15,29 @@ const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '',
   timeout: 30000,
   headers: { 'Content-Type': 'application/json' },
+  withCredentials: true, // send the httpOnly session cookie on every request
 });
 
-// Response interceptor — unwrap data or throw normalized errors
+// Response interceptor — unwrap data, redirect to /login on an expired/missing
+// session, or throw normalized errors. The auth check itself (GET /api/auth/me)
+// must not redirect on its own 401 — that's the expected "not logged in yet" case.
 api.interceptors.response.use(
   (response) => response.data,
   (error) => {
+    const isAuthCheck = error.config?.url?.includes('/api/auth/me');
+    if (error.response?.status === 401 && !isAuthCheck && window.location.pathname !== '/login') {
+      window.location.href = '/login';
+    }
     const message = error.response?.data?.error ?? error.message ?? 'Network error';
     return Promise.reject(new Error(message));
   }
 );
+
+export const authApi = {
+  me: () => api.get('/api/auth/me'),
+  login: (email, password) => api.post('/api/auth/login', { email, password }),
+  logout: () => api.post('/api/auth/logout'),
+};
 
 export const signalsApi = {
   getAll: (params) => api.get('/api/signals', { params }),
@@ -34,7 +47,7 @@ export const signalsApi = {
 };
 
 export const tradesApi = {
-  getAll:                () => api.get('/api/trades'),
+  getAll:                (params) => api.get('/api/trades', { params }),
   getOpen:               () => api.get('/api/trades/open'),
   getLive:               () => api.get('/api/trades/live'),
   getSectorConcentration:() => api.get('/api/trades/sector-concentration'),
@@ -93,6 +106,10 @@ export const alertsApi = {
   create:  (data) => api.post('/api/alerts', data),
   toggle:  (id)   => api.patch(`/api/alerts/${id}/toggle`),
   remove:  (id)   => api.delete(`/api/alerts/${id}`),
+};
+
+export const holidaysApi = {
+  getAll: () => api.get('/api/holidays'),
 };
 
 export const stocksApi = {

@@ -18,9 +18,10 @@ import Stock from '../models/Stock.js';
 import Config from '../models/Config.js';
 import { validateBody } from '../middleware/validateRequest.js';
 import { netAfterCosts } from '../services/tradingCosts.js';
+import { computeCloseFields } from '../services/tradeTracker.js';
 import { sendTarget1Hit, sendTarget2Hit } from '../services/notifier.js';
 import { getLivePositions, refreshOpenPositions } from '../services/positionTracker.js';
-import { emitEvent, SOCKET_EVENTS } from '../socket/socketHandlers.js';
+import { emitToUser, SOCKET_EVENTS } from '../socket/socketHandlers.js';
 import {
   TRADE_STATUSES,
   EXIT_REASONS,
@@ -77,7 +78,7 @@ function computeUnrealized(trade, currentPrice) {
 // GET /api/trades
 router.get('/', async (req, res, next) => {
   try {
-    const filter = {};
+    const filter = { userId: req.userId };
     const validStatuses = new Set(Object.values(TRADE_STATUSES));
     if (req.query.status && validStatuses.has(req.query.status)) {
       filter.status = req.query.status;
@@ -106,9 +107,9 @@ router.get('/', async (req, res, next) => {
 });
 
 // GET /api/trades/sector-concentration — capital distribution by sector for open trades
-router.get('/sector-concentration', async (_req, res, next) => {
+router.get('/sector-concentration', async (req, res, next) => {
   try {
-    const openTrades = await Trade.find({ status: TRADE_STATUSES.OPEN }).lean();
+    const openTrades = await Trade.find({ userId: req.userId, status: TRADE_STATUSES.OPEN }).lean();
     if (!openTrades.length) {
       return res.json({ success: true, data: { sectors: [], totalDeployed: 0, hasWarning: false, warningThreshold: 40 } });
     }
@@ -146,10 +147,10 @@ router.get('/sector-concentration', async (_req, res, next) => {
 
 // GET /api/trades/accuracy — closed trade win/loss breakdown per symbol
 // Returns { [symbol]: { wins, losses, total, winRate } }
-router.get('/accuracy', async (_req, res, next) => {
+router.get('/accuracy', async (req, res, next) => {
   try {
     const results = await Trade.aggregate([
-      { $match: { status: TRADE_STATUSES.CLOSED } },
+      { $match: { userId: new mongoose.Types.ObjectId(req.userId), status: TRADE_STATUSES.CLOSED } },
       {
         $group: {
           _id: '$symbol',
@@ -176,14 +177,16 @@ router.get('/accuracy', async (_req, res, next) => {
 });
 
 // GET /api/trades/risk-summary — real-time capital protection state
-router.get('/risk-summary', async (_req, res, next) => {
+router.get('/risk-summary', async (req, res, next) => {
   try {
-    const config = await Config.findOne().lean();
+    const config = await Config.findOne({ userId: req.userId }).lean();
     const capital           = config?.capital           ?? DEFAULT_CAPITAL;
     const riskPct           = config?.riskPercentage    ?? DEFAULT_RISK_PCT;
+    const maxOpenTrades           = config?.maxOpenTrades           ?? MAX_OPEN_TRADES;
+    const maxCapitalDeployedPct   = config?.maxCapitalDeployedPct   ?? MAX_CAPITAL_DEPLOYED_PCT;
 
     // Open positions
-    const openTrades = await Trade.find({ status: TRADE_STATUSES.OPEN }).lean();
+    const openTrades = await Trade.find({ userId: req.userId, status: TRADE_STATUSES.OPEN }).lean();
     const openCount          = openTrades.length;
     const totalCapitalDeployed = openTrades.reduce((s, t) => s + (t.capitalDeployed ?? 0), 0);
     const capitalDeployedPct   = capital > 0 ? (totalCapitalDeployed / capital) * 100 : 0;
@@ -192,6 +195,7 @@ router.get('/risk-summary', async (_req, res, next) => {
     const todayStart = new Date();
     todayStart.setUTCHours(0, 0, 0, 0);
     const todayTrades = await Trade.find({
+      userId: req.userId,
       status: TRADE_STATUSES.CLOSED,
       exitDate: { $gte: todayStart },
     }).lean();
@@ -207,15 +211,15 @@ router.get('/risk-summary', async (_req, res, next) => {
       data: {
         // ── Position limits ──────────────────────────────────────
         openCount,
-        maxOpenTrades:  MAX_OPEN_TRADES,
-        slotsLeft:      Math.max(0, MAX_OPEN_TRADES - openCount),
-        slotsUsedPct:   Math.round((openCount / MAX_OPEN_TRADES) * 1000) / 10,
+        maxOpenTrades,
+        slotsLeft:      Math.max(0, maxOpenTrades - openCount),
+        slotsUsedPct:   Math.round((openCount / maxOpenTrades) * 1000) / 10,
 
         // ── Capital limits ───────────────────────────────────────
         capital,
         totalCapitalDeployed:  Math.round(totalCapitalDeployed),
         capitalDeployedPct:    Math.round(capitalDeployedPct * 10) / 10,
-        maxCapitalDeployedPct: MAX_CAPITAL_DEPLOYED_PCT,
+        maxCapitalDeployedPct,
         capitalAvailable:      Math.round(capital - totalCapitalDeployed),
 
         // ── Daily loss ───────────────────────────────────────────
@@ -252,9 +256,9 @@ router.get('/risk-summary', async (_req, res, next) => {
 });
 
 // GET /api/trades/open — must be before /:id
-router.get('/open', async (_req, res, next) => {
+router.get('/open', async (req, res, next) => {
   try {
-    const trades = await Trade.find({ status: TRADE_STATUSES.OPEN }).sort({ createdAt: -1 }).lean();
+    const trades = await Trade.find({ userId: req.userId, status: TRADE_STATUSES.OPEN }).sort({ createdAt: -1 }).lean();
     res.json({ success: true, data: trades, message: `${trades.length} open positions` });
   } catch (err) {
     next(err);
@@ -263,9 +267,9 @@ router.get('/open', async (_req, res, next) => {
 
 // GET /api/trades/live — open positions with FRESH-quote P&L, SL distance, and a
 // suggested action + trailing stop per position. Read-only (never closes trades).
-router.get('/live', async (_req, res, next) => {
+router.get('/live', async (req, res, next) => {
   try {
-    const { positions, summary } = await getLivePositions();
+    const { positions, summary } = await getLivePositions(req.userId);
     res.json({ success: true, data: { positions, summary }, message: `${positions.length} live positions` });
   } catch (err) {
     next(err);
@@ -274,9 +278,9 @@ router.get('/live', async (_req, res, next) => {
 
 // POST /api/trades/refresh — force the mutating monitor (auto-close on SL/T2, trail on
 // T1, fire alerts) using fresh light quotes. Returns the monitor summary.
-router.post('/refresh', async (_req, res, next) => {
+router.post('/refresh', async (req, res, next) => {
   try {
-    const summary = await refreshOpenPositions();
+    const summary = await refreshOpenPositions(req.userId);
     res.json({ success: true, data: summary, message: `Monitored ${summary.checked} position(s)` });
   } catch (err) {
     next(err);
@@ -292,13 +296,14 @@ router.post('/', validateBody(newTradeSchema), async (req, res, next) => {
 
     const trade = await Trade.create({
       ...req.body,
+      userId: req.userId,
       status: TRADE_STATUSES.OPEN,
       unrealizedPnl: 0,
       unrealizedPnlPct: 0,
       riskReward: Math.round(riskReward * 100) / 100,
     });
 
-    logger.info('New trade logged', { symbol: trade.symbol, entryPrice, shares, capitalDeployed });
+    logger.info('New trade logged', { userId: req.userId, symbol: trade.symbol, entryPrice, shares, capitalDeployed });
     res.status(201).json({ success: true, data: trade.toObject(), message: 'Trade logged' });
   } catch (err) {
     next(err);
@@ -306,9 +311,9 @@ router.post('/', validateBody(newTradeSchema), async (req, res, next) => {
 });
 
 // GET /api/trades/export — CSV download of all trades (must be before /:id)
-router.get('/export', async (_req, res, next) => {
+router.get('/export', async (req, res, next) => {
   try {
-    const trades = await Trade.find().sort({ createdAt: -1 }).lean();
+    const trades = await Trade.find({ userId: req.userId }).sort({ createdAt: -1 }).lean();
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""').replace(/\n/g, ' ')}"`;
     const header = ['Date','Symbol','Status','Entry Price','Stop Loss','Target 1','Target 2','Shares','Capital Deployed (₹)','Current Price','Exit Price','Exit Reason','Realized P&L (₹)','Realized P&L (%)','Notes'];
     const rows = trades.map((t) => {
@@ -349,7 +354,7 @@ router.patch('/:id', validateBody(updateTradeSchema), async (req, res, next) => 
       return res.status(400).json({ success: false, error: 'Invalid trade ID', code: 400 });
     }
 
-    const trade = await Trade.findById(req.params.id);
+    const trade = await Trade.findOne({ _id: req.params.id, userId: req.userId });
     if (!trade) return res.status(404).json({ success: false, error: 'Trade not found', code: 404 });
     if (trade.status !== TRADE_STATUSES.OPEN) {
       return res.status(400).json({ success: false, error: 'Can only update open trades', code: 400 });
@@ -379,7 +384,7 @@ router.patch('/:id/target1', async (req, res, next) => {
       return res.status(400).json({ success: false, error: 'Invalid trade ID', code: 400 });
     }
 
-    const trade = await Trade.findById(req.params.id);
+    const trade = await Trade.findOne({ _id: req.params.id, userId: req.userId });
     if (!trade) return res.status(404).json({ success: false, error: 'Trade not found', code: 404 });
     if (trade.status !== TRADE_STATUSES.OPEN) {
       return res.status(400).json({ success: false, error: 'Trade is not open', code: 400 });
@@ -398,7 +403,7 @@ router.patch('/:id/target1', async (req, res, next) => {
     }
     await trade.save();
 
-    emitEvent(SOCKET_EVENTS.TRADE_TARGET1, trade.toObject());
+    emitToUser(req.userId, SOCKET_EVENTS.TRADE_TARGET1, trade.toObject());
     sendTarget1Hit(trade.toObject()).catch(() => {});
 
     res.json({ success: true, data: trade.toObject(), message: 'Target 1 marked — SL trailed to entry' });
@@ -414,28 +419,24 @@ router.patch('/:id/close', validateBody(closeTradeSchema), async (req, res, next
       return res.status(400).json({ success: false, error: 'Invalid trade ID', code: 400 });
     }
 
-    const trade = await Trade.findById(req.params.id);
+    const trade = await Trade.findOne({ _id: req.params.id, userId: req.userId });
     if (!trade) return res.status(404).json({ success: false, error: 'Trade not found', code: 404 });
     if (trade.status !== TRADE_STATUSES.OPEN) {
       return res.status(400).json({ success: false, error: 'Trade is not open', code: 400 });
     }
 
     const { exitPrice, exitReason, notes } = req.body;
-    const realizedPnl = (exitPrice - trade.entryPrice) * trade.shares;
-    const realizedPnlPct = ((exitPrice - trade.entryPrice) / trade.entryPrice) * 100;
-
-    trade.status = TRADE_STATUSES.CLOSED;
-    trade.exitPrice = exitPrice;
-    trade.exitDate = new Date();
-    trade.exitReason = exitReason;
-    trade.realizedPnl = Math.round(realizedPnl * 100) / 100;
-    trade.realizedPnlPct = Math.round(realizedPnlPct * 100) / 100;
+    // T1-aware and cost-aware: blends the banked T1 leg (if hit) with the final exit
+    // leg instead of pricing the whole position off only the last price — see
+    // computeCloseFields' own doc for why (this is the same fix tradeTracker's
+    // auto-close path already uses; this manual route was a separate, stale copy).
+    Object.assign(trade, computeCloseFields(trade, exitPrice, exitReason));
     if (notes) trade.notes = notes;
 
     await trade.save();
 
-    // Notify all connected clients so the Positions UI removes the card immediately
-    emitEvent(SOCKET_EVENTS.TRADE_CLOSED, {
+    // Notify only this user's own connected clients — closed-trade P&L is private
+    emitToUser(req.userId, SOCKET_EVENTS.TRADE_CLOSED, {
       _id: String(trade._id),
       symbol: trade.symbol,
       exitReason,

@@ -20,7 +20,7 @@ import Signal from '../models/Signal.js';
 import { ENTRY_WATCH_MAX_SIGNALS, VERDICTS } from '../config/constants.js';
 import { getQuotes } from './quoteService.js';
 import { sendEntryZoneAlert } from './notifier.js';
-import { emitEvent, SOCKET_EVENTS } from '../socket/socketHandlers.js';
+import { emitGlobal, SOCKET_EVENTS } from '../socket/socketHandlers.js';
 import { logger } from '../config/logger.js';
 
 /**
@@ -79,7 +79,7 @@ export const watchEntryZones = async () => {
       if (!res.modifiedCount) continue;
 
       summary.triggered += 1;
-      emitEvent(SOCKET_EVENTS.SIGNAL_ENTRY_TRIGGER, {
+      emitGlobal(SOCKET_EVENTS.SIGNAL_ENTRY_TRIGGER, {
         signalId: signal._id,
         symbol: signal.symbol,
         price,
@@ -91,7 +91,7 @@ export const watchEntryZones = async () => {
         timestamp: now.toISOString(),
       });
       // Also push the updated doc so signal lists refresh without a reload.
-      emitEvent(SOCKET_EVENTS.SIGNAL_UPDATE, {
+      emitGlobal(SOCKET_EVENTS.SIGNAL_UPDATE, {
         ...signal,
         entryAlertSent: true,
         entryTriggeredAt: now,

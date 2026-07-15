@@ -1,11 +1,13 @@
 """
 File: intraday.py
-Description: Intraday 5-minute session snapshot for the Node ORB scanner (Phase 1
-    intraday module). From a multi-session 5m OHLCV frame, computes for the LATEST
-    session: opening range (first N minutes), session VWAP, and time-of-day-adjusted
-    relative volume (today's cumulative volume vs the average cumulative volume of
-    prior sessions at the same bar count). The caller (Node) is responsible for
-    checking sessionDate == today — before the open, the latest session is yesterday.
+Description: Intraday 5-minute session snapshot for the Node intraday engine (ORB,
+    VWAP-reversion, and momentum-continuation strategies all read this). From a
+    multi-session 5m OHLCV frame, computes for the LATEST session: opening range
+    (first N minutes), session VWAP + its deviation band width, a warmed-up EMA(9),
+    and time-of-day-adjusted relative volume (today's cumulative volume vs the
+    average cumulative volume of prior sessions at the same bar count). The caller
+    (Node) is responsible for checking sessionDate == today — before the open, the
+    latest session is yesterday.
 
     yfinance intraday caveat: bars lag real time by up to ~15 minutes for NSE. Fine
     for opening-range-breakout confirmation on 5m closes; not fine for scalping.
@@ -18,9 +20,13 @@ from typing import Optional
 
 import pandas as pd
 
+from app.services.indicators import _ema
+
 logger = logging.getLogger(__name__)
 
 MIN_PRIOR_SESSIONS_FOR_RELVOL = 2
+EMA_PERIOD = 9
+MIN_BARS_FOR_VWAP_STDDEV = 6  # ~30 min into the session before the band means anything
 
 
 def frame_to_bars(df: pd.DataFrame) -> list[dict]:
@@ -63,7 +69,7 @@ def compute_session_snapshot(df: pd.DataFrame, or_minutes: int = 60) -> Optional
     Returns:
         Snapshot dict (see keys below), or None when the frame is empty/unusable.
         Keys: sessionDate, lastPrice, lastBarTime, barsCount, orHigh, orLow,
-        orComplete, vwap, cumVolume, relVolume, dayHigh, dayLow
+        orComplete, vwap, vwapStdDev, ema9, cumVolume, relVolume, dayHigh, dayLow
     """
     if df is None or df.empty:
         return None
@@ -71,6 +77,10 @@ def compute_session_snapshot(df: pd.DataFrame, or_minutes: int = 60) -> Optional
     df = df.dropna(subset=["close"])
     if df.empty:
         return None
+
+    # EMA(9) warmed up across the FULL multi-session frame (not reset per session) —
+    # far more stable in the first few bars of a new day than a session-only EMA would be.
+    ema_series = _ema(df["close"].astype(float), EMA_PERIOD)
 
     dates = pd.Series(df.index.date, index=df.index)
     session_date = dates.iloc[-1]
@@ -87,6 +97,18 @@ def compute_session_snapshot(df: pd.DataFrame, or_minutes: int = 60) -> Optional
     typical = (today["high"] + today["low"] + today["close"]) / 3
     cum_vol = float(today["volume"].sum())
     vwap = float((typical * today["volume"]).sum() / cum_vol) if cum_vol > 0 else None
+
+    # VWAP band width: stdev of (typical price − RUNNING vwap) through today's session so
+    # far — a running (not final) VWAP, since a reversion band must reflect what the band
+    # looked like at each point in time, not use the full day's hindsight vwap.
+    vwap_std = None
+    if len(today) >= MIN_BARS_FOR_VWAP_STDDEV:
+        running_cum_pv = (typical * today["volume"]).cumsum()
+        running_cum_vol = today["volume"].cumsum()
+        running_vwap = running_cum_pv / running_cum_vol.replace(0, pd.NA)
+        deviations = (typical - running_vwap).dropna()
+        if len(deviations) >= MIN_BARS_FOR_VWAP_STDDEV:
+            vwap_std = float(deviations.std())
 
     # Relative volume, time-of-day adjusted: today's cumulative volume vs the average
     # cumulative volume of prior sessions truncated to the same number of bars.
@@ -113,6 +135,8 @@ def compute_session_snapshot(df: pd.DataFrame, or_minutes: int = 60) -> Optional
         "orLow": round(float(or_bars["low"].min()), 2) if not or_bars.empty else None,
         "orComplete": or_complete,
         "vwap": round(vwap, 2) if vwap is not None else None,
+        "vwapStdDev": round(vwap_std, 4) if vwap_std is not None else None,
+        "ema9": round(float(ema_series.iloc[-1]), 2) if not ema_series.empty else None,
         "cumVolume": cum_vol,
         "relVolume": rel_volume,
         "dayHigh": round(float(today["high"].max()), 2),

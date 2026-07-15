@@ -91,10 +91,13 @@ function emptySummary() {
  * Read-only live snapshot of all open positions for the UI. Fetches fresh quotes and
  * computes live P&L + a suggested action/stop per position. Does NOT close or mutate.
  *
+ * @param {string} [userId] - Scope to one user's trades; all users' when omitted
  * @returns {Promise<{ positions: object[], summary: object }>}
  */
-export async function getLivePositions() {
-  const open = await Trade.find({ status: TRADE_STATUSES.OPEN }).sort({ createdAt: -1 }).lean();
+export async function getLivePositions(userId = null) {
+  const open = await Trade.find({ status: TRADE_STATUSES.OPEN, ...(userId ? { userId } : {}) })
+    .sort({ createdAt: -1 })
+    .lean();
   if (!open.length) return { positions: [], summary: emptySummary() };
 
   const symbols = [...new Set(open.map((t) => t.symbol))];
@@ -139,11 +142,14 @@ export async function getLivePositions() {
  * symbols and feed them into the proven monitorOpenTrades() (auto-close on SL/T2, trail
  * on T1, fire SL/earnings alerts). Lighter than the 15-min scan's full /analyze fetch.
  *
+ * @param {string} [userId] - Scope to one user's trades; all users' when omitted (cron)
  * @returns {Promise<object>} monitor summary counters
  */
-export async function refreshOpenPositions() {
+export async function refreshOpenPositions(userId = null) {
   const empty = { checked: 0, slHit: 0, t1: 0, t2: 0, warnings: 0, earnings: 0 };
-  const open = await Trade.find({ status: TRADE_STATUSES.OPEN }).select('symbol').lean();
+  const open = await Trade.find({ status: TRADE_STATUSES.OPEN, ...(userId ? { userId } : {}) })
+    .select('symbol')
+    .lean();
   if (!open.length) return empty;
 
   const symbols = [...new Set(open.map((t) => t.symbol))];
@@ -157,5 +163,5 @@ export async function refreshOpenPositions() {
     logger.warn('refreshOpenPositions: no live quotes — skipping');
     return empty;
   }
-  return monitorOpenTrades(priceMap);
+  return monitorOpenTrades(priceMap, userId);
 }

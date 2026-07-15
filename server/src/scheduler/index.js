@@ -1,23 +1,31 @@
 /**
  * @file scheduler/index.js
- * @description Flow 11 — registers all 10 cron jobs. Times are IST; node-cron uses the
+ * @description Flow 11 — registers all cron jobs. Times are IST; node-cron uses the
  *              server clock (UTC), so expressions are written in UTC (IST − 5:30).
  *              Jobs 5/7/8 depend on external data feeds (FII/DII, sector indices) not
  *              yet ingested — they are registered as documented placeholders so the
  *              schedule is complete and ready to wire when those sources exist.
+ *
+ *              Swing (JOB 11 eod-prep) and intraday (JOB 18 intraday-prep) build their
+ *              shortlists independently — different universes, different ranking
+ *              criteria, different enable flags (Config.scannerEnabled vs
+ *              ORB_SCANNER_ENABLED). Do not reintroduce a dependency between them.
  * @author TradeZen Team
  * @created 2026-06-20
- * @lastModified 2026-06-20
+ * @lastModified 2026-07-09
  */
 
 import cron from 'node-cron';
-import { ENTRY_WATCH_INTERVAL_MINUTES } from '../config/constants.js';
+import { ENTRY_WATCH_INTERVAL_MINUTES, ORB_SCANNER_ENABLED } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 import { runFullScan, runEodPrep, isMarketOpen, isTradingDay } from './scanPipeline.js';
 import ScanResult from '../models/ScanResult.js';
+import IntradayUniverse from '../models/IntradayUniverse.js';
 import Config from '../models/Config.js';
+import User from '../models/User.js';
 import { refreshEarningsCalendar } from '../services/earningsCalendar.js';
 import { watchEntryZones } from '../services/entryWatcher.js';
+import { buildIntradayUniverse } from '../services/intradayUniverse.js';
 import { runOrbScan, settlePaperTrades, remindSquareOff } from '../services/orbScanner.js';
 import { evaluateBlockedTrades } from '../services/disciplineLedger.js';
 import { refreshOpenPositions } from '../services/positionTracker.js';
@@ -59,16 +67,25 @@ function getNowIST() {
   return new Date(Date.now() + 5.5 * 60 * 60 * 1000);
 }
 
+/** Every user's id — the per-user cron reports (morning/evening/weekly) run once each. */
+async function allUserIds() {
+  const users = await User.find().select('_id').lean().catch(() => []);
+  return users.map((u) => String(u._id));
+}
+
 /**
- * The most recent EOD-prep cutoff (16:15 IST) on a trading day at or before `nowIst`.
- * Returned as a REAL (unshifted) instant, comparable directly against stored
- * `createdAt` timestamps.
+ * The most recent daily-job cutoff (given HH:MM IST) on a trading day at or before
+ * `nowIst`. Returned as a REAL (unshifted) instant, comparable directly against stored
+ * `createdAt` timestamps. Shared by the swing EOD-prep and intraday-universe catch-up
+ * nets — both run off the same 16:15 IST post-close slot.
  * @param {Date} nowIst - IST-shifted "now" (see getNowIST)
+ * @param {number} [hour=16]
+ * @param {number} [minute=15]
  * @returns {Date}
  */
-function lastEodPrepCutoff(nowIst) {
+function lastDailyCutoff(nowIst, hour = 16, minute = 15) {
   const cutoffIst = new Date(nowIst);
-  cutoffIst.setUTCHours(16, 15, 0, 0);
+  cutoffIst.setUTCHours(hour, minute, 0, 0);
   if (cutoffIst > nowIst) cutoffIst.setUTCDate(cutoffIst.getUTCDate() - 1);
   while (!isTradingDay(cutoffIst)) {
     cutoffIst.setUTCDate(cutoffIst.getUTCDate() - 1);
@@ -90,14 +107,14 @@ function lastEodPrepCutoff(nowIst) {
  */
 export async function catchUpEodPrepIfStale() {
   try {
-    const [config, latest] = await Promise.all([
-      Config.findOne().select('scannerEnabled').lean(),
+    const [anyEnabled, latest] = await Promise.all([
+      Config.exists({ scannerEnabled: true }),
       ScanResult.findOne({ scanType: 'EOD_PREP' }).sort({ createdAt: -1 }).select('createdAt').lean(),
     ]);
-    const cutoff = lastEodPrepCutoff(getNowIST());
+    const cutoff = lastDailyCutoff(getNowIST());
     if (latest && latest.createdAt >= cutoff) return; // fresh — nothing to do
-    if (!config?.scannerEnabled) {
-      logger.warn('EOD-prep shortlist is stale, but the scanner is paused — catch-up skipped', {
+    if (!anyEnabled) {
+      logger.warn('EOD-prep shortlist is stale, but no user has the scanner on — catch-up skipped', {
         lastRun: latest?.createdAt ?? null,
       });
       return;
@@ -111,6 +128,36 @@ export async function catchUpEodPrepIfStale() {
     logger.info('EOD-prep catch-up done', { candidates });
   } catch (err) {
     logger.error('EOD-prep catch-up failed', { error: err.message });
+  }
+}
+
+/**
+ * Startup safety net for the intraday-prep job — the same missed-schedule problem as
+ * catchUpEodPrepIfStale(), for the intraday module's OWN shortlist. Gated on
+ * ORB_SCANNER_ENABLED (the intraday module's independent pause flag), NOT
+ * Config.scannerEnabled — pausing swing must never pause intraday, or vice versa.
+ * @returns {Promise<void>}
+ */
+export async function catchUpIntradayUniverseIfStale() {
+  try {
+    const latest = await IntradayUniverse.findOne().sort({ createdAt: -1 }).select('createdAt').lean();
+    const cutoff = lastDailyCutoff(getNowIST());
+    if (latest && latest.createdAt >= cutoff) return; // fresh — nothing to do
+    if (!ORB_SCANNER_ENABLED) {
+      logger.warn('Intraday universe is stale, but the intraday module is disabled — catch-up skipped', {
+        lastRun: latest?.createdAt ?? null,
+      });
+      return;
+    }
+
+    logger.warn('Intraday universe missed its 16:15 IST slot — running catch-up now', {
+      lastRun: latest?.createdAt ?? null,
+      cutoff,
+    });
+    const result = await buildIntradayUniverse({ forceRun: true });
+    logger.info('Intraday universe catch-up done', result);
+  } catch (err) {
+    logger.error('Intraday universe catch-up failed', { error: err.message });
   }
 }
 
@@ -150,17 +197,19 @@ export const startScheduler = () => {
     })
   );
 
-  // JOB 14 — Intraday ORB scanner (every 5 min, weekdays; the 10:15–14:00 IST window
-  // guard lives inside runOrbScan). EOD-prep shortlist only, rules-only, EXPERIMENTAL
-  // paper-tracked alerts — never an order, never a Trade doc.
+  // JOB 14 — Intraday engine: ORB + VWAP-reversion + momentum-continuation, long & short
+  // (every 5 min, weekdays; the 10:15–14:00 IST window guard lives inside runOrbScan).
+  // Runs against the intraday module's OWN shortlist (intradayUniverse.js), never the
+  // swing EOD-prep list. Rules only, EXPERIMENTAL, paper-tracked — never an order, never
+  // a Trade doc.
   cron.schedule(
     '*/5 * * * 1-5',
-    job('orb-scan', async () => {
+    job('intraday-scan', async () => {
       if (!isMarketOpen()) return;
       const summary = await runOrbScan();
-      // Log real cycles (telemetry: prescreen savings + which condition rejected what)
-      if (summary.evaluated || summary.prescreened || summary.triggered) {
-        logger.info('ORB scan cycle', summary);
+      // Log real cycles (telemetry: which condition rejected what, per strategy)
+      if (summary.evaluated || summary.triggered) {
+        logger.info('Intraday scan cycle', summary);
       }
     })
   );
@@ -197,11 +246,26 @@ export const startScheduler = () => {
     })
   );
 
-  // JOB 2 — Morning brief (8:30 AM IST = 3:00 UTC, Mon–Fri)
+  // JOB 18 — Intraday universe: the intraday module's OWN daily shortlist (liquid
+  // large-caps ranked by volatility × liquidity), completely decoupled from the swing
+  // EOD-prep list. Same 4:15 PM IST slot (today's close is the input either way).
+  cron.schedule(
+    '45 10 * * 1-5',
+    job('intraday-prep', async () => {
+      const result = await buildIntradayUniverse();
+      logger.info('Intraday prep job done', result);
+    })
+  );
+  // Startup safety net — see catchUpIntradayUniverseIfStale() doc comment.
+  catchUpIntradayUniverseIfStale();
+
+  // JOB 2 — Morning brief (8:30 AM IST = 3:00 UTC, Mon–Fri) — one per user
   cron.schedule(
     '0 3 * * 1-5',
     job('morning-brief', async () => {
-      await sendMorningBrief(await generateMorningBrief());
+      for (const userId of await allUserIds()) {
+        await sendMorningBrief(await generateMorningBrief(userId), userId);
+      }
     })
   );
 
@@ -234,11 +298,13 @@ export const startScheduler = () => {
     })
   );
 
-  // JOB 6 — Evening summary (4:00 PM IST = 10:30 UTC, Mon–Fri)
+  // JOB 6 — Evening summary (4:00 PM IST = 10:30 UTC, Mon–Fri) — one per user
   cron.schedule(
     '30 10 * * 1-5',
     job('evening-summary', async () => {
-      await sendEveningSummary(await generateEveningSummary());
+      for (const userId of await allUserIds()) {
+        await sendEveningSummary(await generateEveningSummary(userId), userId);
+      }
     })
   );
 
@@ -285,19 +351,22 @@ export const startScheduler = () => {
   );
 
   // JOB 10 — Weekly performance report + signal-decay review (Sun 8:00 AM IST = 2:30 UTC)
+  // — every step here is this user's own paper-trading record, so it runs once per user.
   cron.schedule(
     '30 2 * * 0',
     job('weekly-report', async () => {
-      await sendWeeklyReport(await generateWeeklyReport());
-      await updatePerformance();
-      const flags = await reviewSignalDecay();
-      if (flags.length) logger.warn('Signal decay detected', { flags });
-      // Weekly calibration review — the continuous-improvement feedback nudge.
-      await sendDecisionQualityReport(await getDecisionQualityReport()).catch((e) =>
-        logger.error('weekly calibration review failed', { error: e.message })
-      );
+      for (const userId of await allUserIds()) {
+        await sendWeeklyReport(await generateWeeklyReport(userId), userId);
+        await updatePerformance(userId);
+        const flags = await reviewSignalDecay(userId);
+        if (flags.length) logger.warn('Signal decay detected', { userId, flags });
+        // Weekly calibration review — the continuous-improvement feedback nudge.
+        await sendDecisionQualityReport(await getDecisionQualityReport(userId), userId).catch((e) =>
+          logger.error('weekly calibration review failed', { userId, error: e.message })
+        );
+      }
     })
   );
 
-  logger.info('Scheduler registered: 17 cron jobs (main scan every ' + interval + ' min, position monitor every 2 min, entry watch every ' + ENTRY_WATCH_INTERVAL_MINUTES + ' min, ORB scan every 5 min in window)');
+  logger.info('Scheduler registered: 18 cron jobs (main scan every ' + interval + ' min, position monitor every 2 min, entry watch every ' + ENTRY_WATCH_INTERVAL_MINUTES + ' min, intraday scan every 5 min in window, own intraday-prep shortlist)');
 };

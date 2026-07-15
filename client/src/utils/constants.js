@@ -18,7 +18,7 @@ export const GATE_NAMES = Object.freeze({
   gate4: 'RSI between 40–65',
   gate5: 'Volume ≥ 1.5x average',
   gate6: 'Risk:Reward ≥ 2:1',
-  gate7: 'Claude confidence HIGH',
+  gate7: 'Score confidence HIGH',
   gate8: 'News sentiment not negative',
 });
 
@@ -30,7 +30,7 @@ export const GATE_DESCRIPTIONS = Object.freeze({
   gate4: 'Strong filter. RSI in the 40–65 sweet spot: enough momentum, not overbought.',
   gate5: 'Strong filter. Volume at least 1.5× the 20-day average — confirms institutional participation.',
   gate6: 'Hard block. The setup must offer at least 2× reward for the risk taken (R:R ≥ 2:1).',
-  gate7: 'Hard block. Claude must return HIGH confidence — MEDIUM/LOW is downgraded to WAIT.',
+  gate7: 'Hard block. The composite score must reach HIGH confidence (≥60) — MEDIUM/LOW never becomes a BUY.',
   gate8: 'Hard block. No negative news environment around the stock.',
 });
 
@@ -91,6 +91,6 @@ export const EXIT_REASONS = Object.freeze({
 });
 
 // Mirror of server/src/config/constants.js trading limits
-export const MAX_OPEN_TRADES          = 3;
-export const MAX_CAPITAL_DEPLOYED_PCT = 60;
-export const DEFAULT_RISK_PCT         = 1;
+export const MAX_OPEN_TRADES          = 15;
+export const MAX_CAPITAL_DEPLOYED_PCT = 95;
+export const DEFAULT_RISK_PCT         = 0.4;

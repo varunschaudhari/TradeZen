@@ -26,9 +26,9 @@ const noteSchema = Joi.object({
 });
 
 // GET /api/watchlist
-router.get('/', async (_req, res, next) => {
+router.get('/', async (req, res, next) => {
   try {
-    const config = await Config.findOne().lean();
+    const config = await Config.findOne({ userId: req.userId }).lean();
     const watchlist = config?.watchlist ?? [];
     res.json({ success: true, data: watchlist, message: `${watchlist.length} stocks in watchlist` });
   } catch (err) {
@@ -42,7 +42,7 @@ router.post('/', validateBody(addSchema), async (req, res, next) => {
     const { symbol, sector } = req.body;
 
     // Prevent duplicates
-    const existing = await Config.findOne({ 'watchlist.symbol': symbol }).lean();
+    const existing = await Config.findOne({ userId: req.userId, 'watchlist.symbol': symbol }).lean();
     if (existing) {
       return res.status(409).json({
         success: false,
@@ -52,13 +52,17 @@ router.post('/', validateBody(addSchema), async (req, res, next) => {
     }
 
     const config = await Config.findOneAndUpdate(
-      {},
+      { userId: req.userId },
       { $push: { watchlist: { symbol, sector: sector || '' } } },
-      { upsert: true, new: true }
+      { new: true }
     ).lean();
 
+    if (!config) {
+      return res.status(404).json({ success: false, error: 'Config not found — contact an admin', code: 404 });
+    }
+
     const added = config.watchlist.find((w) => w.symbol === symbol);
-    logger.info('Watchlist: added', { symbol, sector });
+    logger.info('Watchlist: added', { userId: req.userId, symbol, sector });
     res.status(201).json({ success: true, data: added, message: `${symbol} added to watchlist` });
   } catch (err) {
     next(err);
@@ -72,7 +76,7 @@ router.patch('/:symbol', validateBody(noteSchema), async (req, res, next) => {
     const { notes } = req.body;
 
     const result = await Config.findOneAndUpdate(
-      { 'watchlist.symbol': symbol },
+      { userId: req.userId, 'watchlist.symbol': symbol },
       { $set: { 'watchlist.$.notes': notes } },
       { new: true }
     ).lean();
@@ -82,7 +86,7 @@ router.patch('/:symbol', validateBody(noteSchema), async (req, res, next) => {
     }
 
     const updated = result.watchlist.find((w) => w.symbol === symbol);
-    logger.info('Watchlist: notes updated', { symbol });
+    logger.info('Watchlist: notes updated', { userId: req.userId, symbol });
     res.json({ success: true, data: updated, message: `Notes updated for ${symbol}` });
   } catch (err) {
     next(err);
@@ -95,7 +99,7 @@ router.delete('/:symbol', async (req, res, next) => {
     const symbol = req.params.symbol.toUpperCase();
 
     const result = await Config.updateOne(
-      {},
+      { userId: req.userId },
       { $pull: { watchlist: { symbol } } }
     );
 
@@ -107,7 +111,7 @@ router.delete('/:symbol', async (req, res, next) => {
       });
     }
 
-    logger.info('Watchlist: removed', { symbol });
+    logger.info('Watchlist: removed', { userId: req.userId, symbol });
     res.json({ success: true, data: null, message: `${symbol} removed from watchlist` });
   } catch (err) {
     next(err);

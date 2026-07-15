@@ -1,8 +1,8 @@
 /**
  * @file scanner.js
- * @description POST /api/scanner/run — run a full analyze → 8-gate → Claude evaluation
- *              on an explicit symbol list and return the resulting signals. This is a
- *              preview/manual scan: it does NOT persist or send alerts (use
+ * @description POST /api/scanner/run — run a full analyze → 8-gate → deterministic-verdict
+ *              evaluation on an explicit symbol list and return the resulting signals.
+ *              This is a preview/manual scan: it does NOT persist or send alerts (use
  *              POST /api/signals/scan for the persisting cron-style universe scan).
  * @author TradeZen Team
  * @created 2026-06-20
@@ -11,20 +11,19 @@
 import express from 'express';
 import Config from '../models/Config.js';
 import { evaluateSymbols } from '../services/stockDiscovery.js';
-import { buildClaudePrompt, callClaudeAPI } from '../services/claudeEngine.js';
+import { decideVerdict } from '../services/verdictEngine.js';
 import { checkGate7 } from '../services/gateChecker.js';
-import { claudeRateLimiter } from '../middleware/rateLimiter.js';
 import { logger } from '../config/logger.js';
 
 const router = express.Router();
 
 /**
- * Compact per-symbol result combining gate output and (optional) Claude verdict.
+ * Compact per-symbol result combining gate output and (optional) verdict analysis.
  * @param {object} candidate - enrichAndGate output
- * @param {object|null} claude - Claude result, or null if gates didn't warrant a call
+ * @param {object|null} analysis - decideVerdict result, or null if gates didn't qualify
  * @returns {object}
  */
-function summarize(candidate, claude) {
+function summarize(candidate, analysis) {
   const { stockData, gateResult, newsData } = candidate;
   return {
     symbol: stockData.symbol,
@@ -36,20 +35,20 @@ function summarize(candidate, claude) {
     shouldCallClaude: gateResult.shouldCallClaude,
     tags: gateResult.tags,
     newsSentiment: newsData?.sentiment,
-    verdict: claude?.verdict ?? (gateResult.hardBlockFired ? 'SKIP' : 'WAIT'),
-    confidence: claude?.confidence ?? null,
-    setupType: claude?.setupType ?? null,
-    entryZone: claude?.entryZone ?? null,
-    stopLoss: claude?.stopLoss ?? stockData.suggestedStopLoss,
-    target1: claude?.target1 ?? stockData.suggestedTarget1,
-    target2: claude?.target2 ?? stockData.suggestedTarget2,
-    riskReward: claude?.riskReward ?? null,
-    reasoning: claude?.reasoning ?? null,
+    verdict: analysis?.verdict ?? (gateResult.hardBlockFired ? 'SKIP' : 'WAIT'),
+    confidence: analysis?.confidence ?? null,
+    setupType: analysis?.setupType ?? null,
+    entryZone: analysis?.entryZone ?? null,
+    stopLoss: analysis?.stopLoss ?? stockData.suggestedStopLoss,
+    target1: analysis?.target1 ?? stockData.suggestedTarget1,
+    target2: analysis?.target2 ?? stockData.suggestedTarget2,
+    riskReward: analysis?.riskReward ?? null,
+    reasoning: analysis?.reasoning ?? null,
   };
 }
 
 // POST /api/scanner/run  body: { symbols: string[] }
-router.post('/run', claudeRateLimiter, async (req, res, next) => {
+router.post('/run', async (req, res, next) => {
   try {
     const raw = Array.isArray(req.body?.symbols) ? req.body.symbols : [];
     if (!raw.length) {
@@ -63,7 +62,7 @@ router.post('/run', claudeRateLimiter, async (req, res, next) => {
     }
     const symbols = [...new Set(raw.map((s) => String(s).replace(/\.NS$/i, '').toUpperCase()))];
 
-    const cfg = await Config.findOne()
+    const cfg = await Config.findOne({ userId: req.userId })
       .lean()
       .catch(() => null);
     const capital = cfg?.capital ?? 1_000_000;
@@ -76,19 +75,12 @@ router.post('/run', claudeRateLimiter, async (req, res, next) => {
         signals.push({ symbol: candidate.symbol, error: candidate.error });
         continue;
       }
-      let claude = null;
+      let analysis = null;
       if (candidate.gateResult.shouldCallClaude) {
-        const prompt = buildClaudePrompt(
-          candidate.stockData,
-          marketData,
-          candidate.newsData,
-          candidate.gateResult,
-          capital
-        );
-        claude = await callClaudeAPI(prompt);
-        candidate.gate7 = checkGate7(claude);
+        analysis = decideVerdict(candidate.stockData, marketData, candidate.gateResult);
+        candidate.gate7 = checkGate7(analysis, marketData);
       }
-      signals.push(summarize(candidate, claude));
+      signals.push(summarize(candidate, analysis));
     }
 
     logger.info('Manual scanner/run complete', {

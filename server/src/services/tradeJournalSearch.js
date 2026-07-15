@@ -14,11 +14,13 @@ import { logger } from '../config/logger.js';
  * @param {number} simonScore - Current Simons score
  * @param {string} setupType - Type of setup (MOMENTUM, PULLBACK, etc)
  * @param {number} riskReward - Current R:R ratio
+ * @param {string} userId - Whose closed trades to compare against
  * @returns {Promise<Object>} historical similar trades
  */
-export async function searchTradeJournal(symbol, simonScore, setupType, riskReward) {
+export async function searchTradeJournal(symbol, simonScore, setupType, riskReward, userId) {
   try {
-    // Query for similar trades (past trades on same symbol or similar setup)
+    // Query for similar trades (past trades on same symbol or similar setup) — shared
+    // signal history, not tied to any one user.
     const similarSignals = await Signal.find({
       symbol,
       verdict: { $in: ['BUY', 'WAIT'] },
@@ -28,8 +30,9 @@ export async function searchTradeJournal(symbol, simonScore, setupType, riskRewa
       .limit(20)
       .lean();
 
-    // Get closed trades for realized R:R comparison
+    // Get this user's own closed trades for realized R:R comparison
     const closedTrades = await Trade.find({
+      userId,
       symbol,
       status: 'CLOSED',
     })

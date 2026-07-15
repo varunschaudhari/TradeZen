@@ -44,7 +44,7 @@ const Level = ({ label, value, color = 'text-slate-100' }) => (
 );
 Level.propTypes = { label: PropTypes.string, value: PropTypes.node, color: PropTypes.string };
 
-const GateRow = ({ name, passed, reason, hint }) => (
+const GateRow = ({ name, passed, reason = '', hint }) => (
   <div className="flex items-start gap-2 text-xs" title={reason || hint}>
     <span className={`mt-0.5 flex-shrink-0 ${passed ? 'text-bull' : 'text-bear'}`}>
       {passed ? '✓' : '✗'}
@@ -56,9 +56,8 @@ const GateRow = ({ name, passed, reason, hint }) => (
   </div>
 );
 GateRow.propTypes = { name: PropTypes.string.isRequired, passed: PropTypes.bool.isRequired, reason: PropTypes.string, hint: PropTypes.string };
-GateRow.defaultProps = { reason: '' };
 
-const SignalCard = ({ signal, quote, onPreview, accuracy, onLogTrade }) => {
+const SignalCard = ({ signal, quote = null, onPreview = null, accuracy = null, onLogTrade = null }) => {
   const [showGates, setShowGates] = useState(false);
   const style      = VERDICT_STYLES[signal.verdict] ?? VERDICT_STYLES.SKIP;
   const isBuy      = signal.verdict === 'BUY';
@@ -306,7 +305,5 @@ SignalCard.propTypes = {
     winRate: PropTypes.number,
   }),
 };
-
-SignalCard.defaultProps = { quote: null, onPreview: null, onLogTrade: null, accuracy: null };
 
 export default SignalCard;

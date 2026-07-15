@@ -7,6 +7,15 @@
  */
 
 import { logger } from '../config/logger.js';
+import { verifyToken, AUTH_COOKIE_NAME } from '../services/authService.js';
+
+// Minimal cookie-header parser — avoids pulling in the full cookie-parser
+// package for a single-key lookup on the raw socket.io handshake headers.
+const readCookie = (cookieHeader, name) => {
+  if (!cookieHeader) return null;
+  const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+  return match ? decodeURIComponent(match[1]) : null;
+};
 
 // Socket event names — must match client-side constants
 export const SOCKET_EVENTS = Object.freeze({
@@ -38,7 +47,17 @@ export const initSocketHandlers = (io) => {
   _io = io;
 
   io.on('connection', (socket) => {
-    logger.info(`WebSocket client connected: ${socket.id}`);
+    const token = readCookie(socket.handshake.headers.cookie, AUTH_COOKIE_NAME);
+    const claims = token ? verifyToken(token) : null;
+
+    if (!claims) {
+      logger.warn(`WebSocket client connected without a valid session: ${socket.id}`);
+      socket.disconnect(true);
+      return;
+    }
+
+    socket.join(`user:${claims.userId}`);
+    logger.info(`WebSocket client connected: ${socket.id} (user ${claims.userId})`);
 
     socket.on('disconnect', () => {
       logger.info(`WebSocket client disconnected: ${socket.id}`);
@@ -47,12 +66,26 @@ export const initSocketHandlers = (io) => {
 };
 
 /**
- * Emit a signal event to all connected clients
+ * Emit a shared event to every connected client (market data, scan progress,
+ * signal quality — none of it is per-user).
  * @param {string} event - SOCKET_EVENTS value
  * @param {object} data - Payload
  */
-export const emitEvent = (event, data) => {
+export const emitGlobal = (event, data) => {
   if (_io) {
     _io.emit(event, data);
+  }
+};
+
+/**
+ * Emit a per-user event (trade lifecycle, price alerts) only to sockets
+ * authenticated as that user.
+ * @param {string} userId
+ * @param {string} event - SOCKET_EVENTS value
+ * @param {object} data - Payload
+ */
+export const emitToUser = (userId, event, data) => {
+  if (_io && userId) {
+    _io.to(`user:${userId}`).emit(event, data);
   }
 };

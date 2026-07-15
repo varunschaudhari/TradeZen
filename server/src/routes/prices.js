@@ -10,7 +10,7 @@ import express from 'express';
 import Joi from 'joi';
 import Trade from '../models/Trade.js';
 import { validateBody } from '../middleware/validateRequest.js';
-import { emitEvent, SOCKET_EVENTS } from '../socket/socketHandlers.js';
+import { emitToUser, SOCKET_EVENTS } from '../socket/socketHandlers.js';
 import { sendSlWarning } from '../services/notifier.js';
 import { SL_WARNING_PCT, TRADE_STATUSES } from '../config/constants.js';
 import { logger } from '../config/logger.js';
@@ -37,6 +37,7 @@ router.post('/update', validateBody(priceUpdateSchema), async (req, res, next) =
     const symbols = prices.map((p) => p.symbol.toUpperCase());
 
     const openTrades = await Trade.find({
+      userId: req.userId,
       symbol: { $in: symbols },
       status: TRADE_STATUSES.OPEN,
     }).lean();
@@ -56,7 +57,7 @@ router.post('/update', validateBody(priceUpdateSchema), async (req, res, next) =
           const unrealizedPnlPct =
             trade.capitalDeployed > 0 ? (unrealizedPnl / trade.capitalDeployed) * 100 : 0;
 
-          emitEvent(SOCKET_EVENTS.TRADE_SL_WARNING, {
+          emitToUser(trade.userId, SOCKET_EVENTS.TRADE_SL_WARNING, {
             tradeId: trade._id,
             symbol,
             currentPrice,

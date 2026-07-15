@@ -11,6 +11,7 @@
 import Signal from '../models/Signal.js';
 import Trade from '../models/Trade.js';
 import Config from '../models/Config.js';
+import MarketState from '../models/MarketState.js';
 import Performance from '../models/Performance.js';
 import { logger } from '../config/logger.js';
 import { VERDICTS, TRADE_STATUSES } from '../config/constants.js';
@@ -50,13 +51,15 @@ function todayIST() {
  * - Open trades: count, total deployed capital, unrealized P&L
  * - Signals generated today (so far): count by verdict
  *
+ * @param {string} userId
  * @returns {Promise<object>} Morning brief payload for notifier.sendMorningBrief()
  */
-export const generateMorningBrief = async () => {
+export const generateMorningBrief = async (userId) => {
   try {
-    const [config, openTrades, todaySignals] = await Promise.all([
-      Config.findOne().lean(),
-      Trade.find({ status: TRADE_STATUSES.OPEN }).lean(),
+    const [config, marketState, openTrades, todaySignals] = await Promise.all([
+      Config.findOne({ userId }).lean(),
+      MarketState.findOne().select('marketMode').lean(),
+      Trade.find({ userId, status: TRADE_STATUSES.OPEN }).lean(),
       Signal.find({ createdAt: { $gte: startOfToday() } }).lean(),
     ]);
 
@@ -67,7 +70,7 @@ export const generateMorningBrief = async () => {
 
     return {
       dateStr: todayIST(),
-      marketMode: config?.marketMode ?? 'UNKNOWN',
+      marketMode: marketState?.marketMode ?? 'UNKNOWN',
       paperTradeMode: config?.paperTradeMode ?? true,
       capital: config?.capital ?? 0,
       watchlistCount: config?.watchlist?.length ?? 0,
@@ -99,14 +102,15 @@ export const generateMorningBrief = async () => {
  * - All signals today: total count, BUY count
  * - Claude API cost today
  *
+ * @param {string} userId
  * @returns {Promise<object>} Evening summary payload for notifier.sendEveningSummary()
  */
-export const generateEveningSummary = async () => {
+export const generateEveningSummary = async (userId) => {
   try {
     const today = startOfToday();
     const [closedToday, openTrades, todaySignals] = await Promise.all([
-      Trade.find({ status: TRADE_STATUSES.CLOSED, exitDate: { $gte: today } }).lean(),
-      Trade.find({ status: TRADE_STATUSES.OPEN }).lean(),
+      Trade.find({ userId, status: TRADE_STATUSES.CLOSED, exitDate: { $gte: today } }).lean(),
+      Trade.find({ userId, status: TRADE_STATUSES.OPEN }).lean(),
       Signal.find({ createdAt: { $gte: today } }).lean(),
     ]);
 
@@ -144,15 +148,16 @@ export const generateEveningSummary = async () => {
  * - All signals this week: count, Claude cost
  * - Performance document if available
  *
+ * @param {string} userId
  * @returns {Promise<object>} Weekly report payload for notifier.sendWeeklyReport()
  */
-export const generateWeeklyReport = async () => {
+export const generateWeeklyReport = async (userId) => {
   try {
     const weekStart = startOfWeek();
     const [weekTrades, weekSignals, perfDoc] = await Promise.all([
-      Trade.find({ status: TRADE_STATUSES.CLOSED, exitDate: { $gte: weekStart } }).lean(),
+      Trade.find({ userId, status: TRADE_STATUSES.CLOSED, exitDate: { $gte: weekStart } }).lean(),
       Signal.find({ createdAt: { $gte: weekStart } }).lean(),
-      Performance.findOne({ period: 'weekly', date: { $gte: weekStart } })
+      Performance.findOne({ userId, period: 'weekly', date: { $gte: weekStart } })
         .sort({ date: -1 })
         .lean(),
     ]);

@@ -1,9 +1,12 @@
 /**
  * @file IntradayPanel.jsx
- * @description Intraday paper-trade lane on the Positions page — today's ORB alerts and
+ * @description Intraday paper-trade lane on the Positions page — today's alerts across
+ *   all three strategies (ORB, VWAP Reversion, Momentum Continuation; long or short) and
  *   manually logged intraday trades, with live unrealized P&L, a log modal, and manual
  *   close. Strictly separate from the swing book: separate collection, separate paper
- *   capital, and MANUAL entries never touch the ORB track record or go-live evidence.
+ *   capital, and MANUAL entries never touch any strategy's track record or go-live
+ *   evidence. Also strictly separate from the swing EOD-prep universe — see
+ *   intradayUniverse.js for why the two stock-selection pipelines must never merge again.
  *
  *   IMPORTANT: This platform never places orders. Intraday trades here are paper records.
  */
@@ -15,29 +18,9 @@ import { intradayApi } from '../services/api.js';
 import { formatCurrency } from '../utils/formatters.js';
 import useSocket from '../hooks/useSocket.js';
 import { SOCKET_EVENTS } from '../utils/constants.js';
+import { EXIT_META, StrategyBadge, DirectionBadge } from './IntradayBadges.jsx';
 
 const POLL_MS = 45_000;
-
-const EXIT_META = {
-  TARGET:    { label: 'Target',     cls: 'text-bull' },
-  STOPLOSS:  { label: 'Stop',       cls: 'text-bear' },
-  SQUAREOFF: { label: 'Square-off', cls: 'text-slate-300' },
-  MANUAL:    { label: 'Manual',     cls: 'text-slate-300' },
-};
-
-const SourceBadge = ({ source }) => (
-  <span
-    className={`px-1.5 py-0.5 rounded text-[10px] font-semibold tracking-wide ${
-      source === 'MANUAL'
-        ? 'bg-sky-900/60 text-sky-300 border border-sky-700/50'
-        : 'bg-amber-900/60 text-amber-300 border border-amber-700/50'
-    }`}
-  >
-    {source === 'MANUAL' ? 'MANUAL' : 'ORB'}
-  </span>
-);
-
-SourceBadge.propTypes = { source: PropTypes.string };
 
 /* ── Log Intraday Trade modal ─────────────────────────────────────────────────── */
 const Field = ({ label, required, children }) => (
@@ -56,17 +39,19 @@ Field.propTypes = {
 };
 
 const LogIntradayModal = ({ onClose, onSuccess }) => {
-  const [form, setForm] = useState({ symbol: '', entryPrice: '', stopLoss: '', target: '', shares: '', notes: '' });
+  const [form, setForm] = useState({
+    symbol: '', direction: 'LONG', entryPrice: '', stopLoss: '', target: '', shares: '', notes: '',
+  });
   const [submitting, setSubmitting] = useState(false);
   const num = (key) => parseFloat(form[key]);
   const update = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
+  const isLong = form.direction !== 'SHORT';
 
   const capitalDeployed =
     num('entryPrice') > 0 && num('shares') > 0 ? num('entryPrice') * parseInt(form.shares, 10) : null;
+  const risk = num('entryPrice') > 0 && num('stopLoss') > 0 ? Math.abs(num('entryPrice') - num('stopLoss')) : null;
   const rr =
-    num('entryPrice') > 0 && num('stopLoss') > 0 && num('target') > 0
-      ? (num('target') - num('entryPrice')) / (num('entryPrice') - num('stopLoss'))
-      : null;
+    risk > 0 && num('target') > 0 ? Math.abs(num('target') - num('entryPrice')) / risk : null;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -74,25 +59,26 @@ const LogIntradayModal = ({ onClose, onSuccess }) => {
       toast.error('Fill in all required fields');
       return;
     }
-    if (num('stopLoss') >= num('entryPrice')) {
-      toast.error('Stop loss must be below entry price');
+    if (isLong && !(num('stopLoss') < num('entryPrice') && num('target') > num('entryPrice'))) {
+      toast.error('For a LONG trade: stop loss must be below entry and target above entry');
       return;
     }
-    if (num('target') <= num('entryPrice')) {
-      toast.error('Target must be above entry price');
+    if (!isLong && !(num('stopLoss') > num('entryPrice') && num('target') < num('entryPrice'))) {
+      toast.error('For a SHORT trade: stop loss must be above entry and target below entry');
       return;
     }
     try {
       setSubmitting(true);
       const res = await intradayApi.logTrade({
         symbol: form.symbol.trim().toUpperCase(),
+        direction: form.direction,
         entryPrice: num('entryPrice'),
         stopLoss: num('stopLoss'),
         target: num('target'),
         shares: parseInt(form.shares, 10),
         ...(form.notes && { notes: form.notes }),
       });
-      toast.success(`${res.data.symbol} intraday trade logged (paper)`);
+      toast.success(`${res.data.symbol} ${form.direction} intraday trade logged (paper)`);
       onSuccess?.(res.data);
       onClose();
     } catch (err) {
@@ -124,17 +110,41 @@ const LogIntradayModal = ({ onClose, onSuccess }) => {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <Field label="NSE Symbol" required>
-            <input
-              type="text"
-              value={form.symbol}
-              onChange={(e) => update('symbol', e.target.value.toUpperCase())}
-              placeholder="RELIANCE"
-              maxLength={20}
-              className="input w-full font-mono"
-              required
-            />
-          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="NSE Symbol" required>
+              <input
+                type="text"
+                value={form.symbol}
+                onChange={(e) => update('symbol', e.target.value.toUpperCase())}
+                placeholder="RELIANCE"
+                maxLength={20}
+                className="input w-full font-mono"
+                required
+              />
+            </Field>
+            <Field label="Direction" required>
+              <div className="flex rounded-lg overflow-hidden border border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => update('direction', 'LONG')}
+                  className={`flex-1 py-2 text-sm font-semibold transition-colors ${
+                    isLong ? 'bg-bull/20 text-bull' : 'bg-surface-elevated text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Long
+                </button>
+                <button
+                  type="button"
+                  onClick={() => update('direction', 'SHORT')}
+                  className={`flex-1 py-2 text-sm font-semibold transition-colors ${
+                    !isLong ? 'bg-bear/20 text-bear' : 'bg-surface-elevated text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Short
+                </button>
+              </div>
+            </Field>
+          </div>
 
           <div className="grid grid-cols-2 gap-3">
             <Field label="Entry Price (₹)" required>
@@ -160,7 +170,7 @@ const LogIntradayModal = ({ onClose, onSuccess }) => {
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Stop Loss (₹)" required>
+            <Field label={`Stop Loss (₹) — ${isLong ? 'below' : 'above'} entry`} required>
               <input
                 type="number" step="0.01" min="0.01"
                 value={form.stopLoss}
@@ -170,7 +180,7 @@ const LogIntradayModal = ({ onClose, onSuccess }) => {
                 required
               />
             </Field>
-            <Field label="Target (₹)" required>
+            <Field label={`Target (₹) — ${isLong ? 'above' : 'below'} entry`} required>
               <input
                 type="number" step="0.01" min="0.01"
                 value={form.target}
@@ -302,8 +312,9 @@ const IntradayPanel = () => {
 
       {open.length === 0 && settled.length === 0 ? (
         <p className="text-sm text-slate-500">
-          No intraday entries this session. ORB alerts land here automatically (10:15–14:00 IST);
-          use <strong className="text-sky-300">+ Log Intraday</strong> to track a trade you took yourself.
+          No intraday entries this session. ORB / VWAP-Reversion / Momentum alerts land here
+          automatically (10:15–14:00 IST); use <strong className="text-sky-300">+ Log Intraday</strong> to
+          track a trade you took yourself, long or short.
         </p>
       ) : (
         <div className="space-y-4">
@@ -314,6 +325,7 @@ const IntradayPanel = () => {
                 <thead>
                   <tr className="text-xs text-slate-500 text-left border-b border-slate-700/60">
                     <th className="py-1.5 pr-3 font-medium">Symbol</th>
+                    <th className="py-1.5 pr-3 font-medium">Setup</th>
                     <th className="py-1.5 pr-3 font-medium">Entry</th>
                     <th className="py-1.5 pr-3 font-medium">Stop</th>
                     <th className="py-1.5 pr-3 font-medium">Target</th>
@@ -327,14 +339,17 @@ const IntradayPanel = () => {
                   {open.map((t) => (
                     <tr key={t._id} className="border-b border-slate-800/60">
                       <td className="py-2 pr-3">
-                        <span className="font-mono font-semibold text-slate-100">{t.symbol}</span>{' '}
-                        <SourceBadge source={t.source} />
+                        <span className="font-mono font-semibold text-slate-100">{t.symbol}</span>
                         {t.stopBreached && (
                           <span className="ml-1 text-[10px] text-bear font-semibold">▼ below stop</span>
                         )}
                         {t.targetReached && (
                           <span className="ml-1 text-[10px] text-bull font-semibold">▲ target hit</span>
                         )}
+                      </td>
+                      <td className="py-2 pr-3 space-x-1 whitespace-nowrap">
+                        <StrategyBadge setupType={t.setupType} />
+                        <DirectionBadge direction={t.direction} />
                       </td>
                       <td className="py-2 pr-3 font-mono">{t.breakoutPrice?.toFixed(2) ?? '—'}</td>
                       <td className="py-2 pr-3 font-mono text-bear">{t.suggestedStop?.toFixed(2) ?? '—'}</td>
@@ -394,8 +409,11 @@ const IntradayPanel = () => {
                       return (
                         <tr key={t._id} className="border-b border-slate-800/60 last:border-0">
                           <td className="py-1.5 pr-3">
-                            <span className="font-mono font-semibold text-slate-200">{t.symbol}</span>{' '}
-                            <SourceBadge source={t.source} />
+                            <span className="font-mono font-semibold text-slate-200">{t.symbol}</span>
+                          </td>
+                          <td className="py-1.5 pr-3 space-x-1 whitespace-nowrap">
+                            <StrategyBadge setupType={t.setupType} />
+                            <DirectionBadge direction={t.direction} />
                           </td>
                           <td className="py-1.5 pr-3 font-mono text-slate-400">
                             {t.breakoutPrice?.toFixed(2)} → {t.exitPrice?.toFixed(2)}

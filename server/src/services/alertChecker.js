@@ -6,7 +6,7 @@
 
 import PriceAlert from '../models/PriceAlert.js';
 import { fetchQuotes } from './pythonBridge.js';
-import { emitEvent, SOCKET_EVENTS } from '../socket/socketHandlers.js';
+import { emitToUser, SOCKET_EVENTS } from '../socket/socketHandlers.js';
 import { logger } from '../config/logger.js';
 
 /**
@@ -44,7 +44,7 @@ export async function checkPriceAlerts() {
       triggeredAt: new Date(),
     });
 
-    emitEvent(SOCKET_EVENTS.PRICE_ALERT, {
+    emitToUser(alert.userId, SOCKET_EVENTS.PRICE_ALERT, {
       alertId:     String(alert._id),
       symbol:      alert.symbol,
       targetPrice: alert.targetPrice,

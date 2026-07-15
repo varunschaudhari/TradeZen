@@ -34,13 +34,13 @@ router.get('/', async (req, res) => {
         .select('symbol verdict confidence compositeScore gatesPassed createdAt entryZone stopLoss target1 target2')
         .lean(),
 
-      Trade.find({ symbol: { $regex: regex } })
+      Trade.find({ userId: req.userId, symbol: { $regex: regex } })
         .sort({ createdAt: -1 })
         .limit(limit)
         .select('symbol status entryPrice entryDate exitPrice exitDate realizedPnl realizedPnlPct exitReason')
         .lean(),
 
-      Config.findOne().select('watchlist').lean(),
+      Config.findOne({ userId: req.userId }).select('watchlist').lean(),
     ]);
 
     const watchlist = (config?.watchlist ?? [])

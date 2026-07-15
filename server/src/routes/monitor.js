@@ -18,6 +18,7 @@
 import express from 'express';
 import Joi from 'joi';
 import Config from '../models/Config.js';
+import MarketState from '../models/MarketState.js';
 import Signal from '../models/Signal.js';
 import Trade from '../models/Trade.js';
 import ScanResult from '../models/ScanResult.js';
@@ -84,7 +85,8 @@ const startOfTodayUTC = () => {
 };
 
 // ── Feature 4: Database statistics ──────────────────────────────────────────────
-async function buildStats(config, latest) {
+// Trade counts/P&L are this user's own — Signal/ScanResult counts stay global (shared scan data).
+async function buildStats(config, latest, userId) {
   const [
     activeAgg,
     openTrades,
@@ -98,10 +100,10 @@ async function buildStats(config, latest) {
       { $match: { isActive: true } },
       { $group: { _id: '$verdict', n: { $sum: 1 } } },
     ]),
-    Trade.countDocuments({ status: 'OPEN' }),
-    Trade.find({ status: 'CLOSED' }).select('realizedPnl').lean(),
+    Trade.countDocuments({ userId, status: 'OPEN' }),
+    Trade.find({ userId, status: 'CLOSED' }).select('realizedPnl').lean(),
     Signal.estimatedDocumentCount(),
-    Trade.estimatedDocumentCount(),
+    Trade.countDocuments({ userId }),
     ScanResult.estimatedDocumentCount(),
     ScanResult.countDocuments({ createdAt: { $gte: startOfTodayUTC() } }),
   ]);
@@ -122,6 +124,38 @@ async function buildStats(config, latest) {
     winRate,
     collections: { signals: signalCount, trades: tradeCount, scanResults: scanCount },
     scansToday,
+  };
+}
+
+// ── Score-reachability: how close does each scan actually get to a BUY? ─────────
+// The verdict engine only BUYs at score-confidence HIGH (≥60) — this shows, for the
+// most recent scan, how many gate-qualified stocks landed in each score band and what
+// verdict they actually got, so a persistently-empty 60+ band is visible immediately
+// instead of discovered days later as "why are there no BUYs" (see the walk-forward
+// backtest's liveStrategy/byVerdict panel for the same picture over history).
+function buildScoreDistribution(latest) {
+  const qualified = (latest?.stocks ?? []).filter((s) => s.reachedClaude);
+  if (!qualified.length) {
+    return { available: false, lastScanAt: latest?.createdAt ?? null };
+  }
+  const buckets = {
+    '<50': qualified.filter((s) => (s.compositeScore ?? 0) < 50),
+    '50-59': qualified.filter((s) => (s.compositeScore ?? 0) >= 50 && s.compositeScore < 60),
+    '60-69': qualified.filter((s) => (s.compositeScore ?? 0) >= 60 && s.compositeScore < 70),
+    '70+': qualified.filter((s) => (s.compositeScore ?? 0) >= 70),
+  };
+  const byVerdict = { BUY: 0, WAIT: 0, SKIP: 0 };
+  for (const s of qualified) if (s.verdict && byVerdict[s.verdict] != null) byVerdict[s.verdict] += 1;
+  return {
+    available: true,
+    lastScanAt: latest?.createdAt ?? null,
+    qualifiedCount: qualified.length,
+    byScoreBucket: Object.fromEntries(Object.entries(buckets).map(([k, v]) => [k, v.length])),
+    byVerdict,
+    topScores: [...qualified]
+      .sort((a, b) => (b.compositeScore ?? 0) - (a.compositeScore ?? 0))
+      .slice(0, 5)
+      .map((s) => ({ symbol: s.symbol, score: s.compositeScore, verdict: s.verdict })),
   };
 }
 
@@ -248,23 +282,24 @@ function buildSectors(latest, sectorOf) {
 }
 
 // ── Feature 6: Scanner config / schedule ────────────────────────────────────────
-function buildScanner(config, latest) {
+function buildScanner(config, latest, marketMode) {
   const lastAt = latest ? new Date(latest.createdAt).getTime() : null;
   const nextAt = lastAt ? lastAt + SCAN_INTERVAL_MIN * 60000 : null;
   return {
     enabled: config?.scannerEnabled ?? false,
     intervalMinutes: SCAN_INTERVAL_MIN,
-    marketMode: config?.marketMode ?? latest?.marketMode ?? null,
+    marketMode: marketMode ?? latest?.marketMode ?? null,
     lastScanAt: latest?.createdAt ?? null,
     nextScanAt: nextAt ? new Date(nextAt).toISOString() : null,
   };
 }
 
 // ── GET /api/monitor/overview ────────────────────────────────────────────────────
-router.get('/overview', async (_req, res, next) => {
+router.get('/overview', async (req, res, next) => {
   try {
-    const [config, latest, history] = await Promise.all([
-      Config.findOne().lean(),
+    const [config, marketState, latest, history] = await Promise.all([
+      Config.findOne({ userId: req.userId }).lean(),
+      MarketState.findOne().select('marketMode').lean(),
       ScanResult.findOne({ scanType: 'LIVE' }).sort({ createdAt: -1 }).lean(),
       ScanResult.find({ scanType: 'LIVE' })
         .sort({ createdAt: -1 })
@@ -274,16 +309,17 @@ router.get('/overview', async (_req, res, next) => {
     ]);
     const sectorOf = buildSectorLookup(config?.watchlist);
 
-    const stats = await buildStats(config, latest);
+    const stats = await buildStats(config, latest, req.userId);
 
     res.json({
       success: true,
       data: {
         stats,
         analytics: buildAnalytics(history, latest),
+        scoreDistribution: buildScoreDistribution(latest),
         health: buildHealth(history, latest),
         sectors: buildSectors(latest, sectorOf),
-        scanner: buildScanner(config, latest),
+        scanner: buildScanner(config, latest, marketState?.marketMode),
         progress: getScanState(),
         events: getRecentEvents(20),
       },
@@ -297,10 +333,10 @@ router.get('/overview', async (_req, res, next) => {
 
 // ── Feature 1: Stock inventory + scan status ─────────────────────────────────────
 // GET /api/monitor/inventory
-router.get('/inventory', async (_req, res, next) => {
+router.get('/inventory', async (req, res, next) => {
   try {
     const [config, latest, activeSignals] = await Promise.all([
-      Config.findOne().lean(),
+      Config.findOne({ userId: req.userId }).lean(),
       ScanResult.findOne({ scanType: 'LIVE' }).sort({ createdAt: -1 }).lean(),
       Signal.find({ isActive: true })
         .sort({ createdAt: -1 })
@@ -378,13 +414,13 @@ router.get('/inventory', async (_req, res, next) => {
 
 // ── Full universe catalog: every scannable symbol + its most-recent status ───────
 // GET /api/monitor/catalog
-router.get('/catalog', async (_req, res, next) => {
+router.get('/catalog', async (req, res, next) => {
   try {
     // Primary source is now the durable Stock master (persists across the ScanResult
     // TTL, carries accurate sectors + fundamentals). Universe fills in symbols not yet
     // catalogued (shown as pending); active signals are merged on top.
     const [config, stocks, activeSignals, universe] = await Promise.all([
-      Config.findOne().lean(),
+      Config.findOne({ userId: req.userId }).lean(),
       Stock.find({}).lean(),
       Signal.find({ isActive: true })
         .sort({ createdAt: -1 })
@@ -466,22 +502,24 @@ router.get('/catalog', async (_req, res, next) => {
 });
 
 // ── Decision-quality / calibration report ───────────────────────────────────────
-// The report is heavy (resolves every stored signal against forward prices), so cache it.
-let _calibration = { data: null, at: 0 };
+// The report is heavy (resolves every stored signal against forward prices), so cache it
+// per user (the trade-based half of the report is this user's own paper record).
+const _calibration = new Map(); // userId -> { data, at }
 const CALIBRATION_TTL_MS = 30 * 60 * 1000;
 // GET /api/monitor/calibration  (?refresh=1 to recompute)
 router.get('/calibration', async (req, res, next) => {
   try {
-    const fresh = _calibration.data && Date.now() - _calibration.at < CALIBRATION_TTL_MS;
+    const cached = _calibration.get(req.userId);
+    const fresh = cached?.data && Date.now() - cached.at < CALIBRATION_TTL_MS;
     if (fresh && req.query.refresh !== '1') {
       return res.json({
         success: true,
-        data: { ..._calibration.data, cached: true, cacheAgeMin: Math.round((Date.now() - _calibration.at) / 60000) },
+        data: { ...cached.data, cached: true, cacheAgeMin: Math.round((Date.now() - cached.at) / 60000) },
         message: 'Calibration (cached)',
       });
     }
-    const report = await getDecisionQualityReport();
-    _calibration = { data: report, at: Date.now() };
+    const report = await getDecisionQualityReport(req.userId);
+    _calibration.set(req.userId, { data: report, at: Date.now() });
     res.json({ success: true, data: report, message: 'Calibration report' });
   } catch (err) {
     logger.error('GET /api/monitor/calibration failed', { error: err.message });
@@ -530,7 +568,7 @@ const scannerSchema = Joi.object({ enabled: Joi.boolean().required() });
 router.patch('/scanner', validateBody(scannerSchema), async (req, res, next) => {
   try {
     const { enabled } = req.body;
-    await Config.findOneAndUpdate({}, { $set: { scannerEnabled: enabled } }, { upsert: true });
+    await Config.findOneAndUpdate({ userId: req.userId }, { $set: { scannerEnabled: enabled } });
     emitMonitorEvent('scanner', enabled ? 'success' : 'warn', `Automatic scanner ${enabled ? 'enabled' : 'disabled'}`);
     logger.info('Scanner toggled', { enabled });
     res.json({ success: true, data: { enabled }, message: `Scanner ${enabled ? 'enabled' : 'disabled'}` });

@@ -8,6 +8,7 @@
  */
 
 import express from 'express';
+import mongoose from 'mongoose';
 import Trade from '../models/Trade.js';
 import Signal from '../models/Signal.js';
 import Config from '../models/Config.js';
@@ -19,9 +20,9 @@ const router = express.Router();
 
 // GET /api/performance/decision-quality — calibration / decision-quality report.
 // Resolves stored signals against forward prices (slow — fetches OHLCV per symbol).
-router.get('/decision-quality', async (_req, res, next) => {
+router.get('/decision-quality', async (req, res, next) => {
   try {
-    const report = await getDecisionQualityReport();
+    const report = await getDecisionQualityReport(req.userId);
     res.json({ success: true, data: report, message: 'Decision-quality / calibration report' });
   } catch (err) {
     next(err);
@@ -29,12 +30,12 @@ router.get('/decision-quality', async (_req, res, next) => {
 });
 
 // GET /api/performance — must be before /history to avoid route shadowing
-router.get('/', async (_req, res, next) => {
+router.get('/', async (req, res, next) => {
   try {
     const [closedTrades, openTrades, config, signalStats] = await Promise.all([
-      Trade.find({ status: TRADE_STATUSES.CLOSED }).lean(),
-      Trade.find({ status: TRADE_STATUSES.OPEN }).lean(),
-      Config.findOne().lean(),
+      Trade.find({ userId: req.userId, status: TRADE_STATUSES.CLOSED }).lean(),
+      Trade.find({ userId: req.userId, status: TRADE_STATUSES.OPEN }).lean(),
+      Config.findOne({ userId: req.userId }).lean(),
       Signal.aggregate([
         { $group: { _id: null, totalCost: { $sum: '$claudeCostInr' }, count: { $sum: 1 } } },
       ]),
@@ -47,10 +48,15 @@ router.get('/', async (_req, res, next) => {
     const totalPnl = closedTrades.reduce((s, t) => s + (t.realizedPnl ?? 0), 0);
     const totalCapitalUsed = closedTrades.reduce((s, t) => s + (t.capitalDeployed ?? 0), 0);
     const totalPnlPct = totalCapitalUsed > 0 ? (totalPnl / totalCapitalUsed) * 100 : 0;
-    const avgRR =
-      totalTrades > 0
-        ? closedTrades.reduce((s, t) => s + (t.riskReward ?? 0), 0) / totalTrades
-        : 0;
+    // Trade has no stored riskReward field (that lives on Signal) — derive it from the
+    // trade's own entry/stop/target1, which every logged trade has regardless of provenance.
+    const rrValues = closedTrades
+      .map((t) => {
+        const risk = t.entryPrice - t.stopLoss;
+        return risk > 0 && t.target1 != null ? (t.target1 - t.entryPrice) / risk : null;
+      })
+      .filter((rr) => rr != null);
+    const avgRR = rrValues.length ? rrValues.reduce((s, rr) => s + rr, 0) / rrValues.length : 0;
 
     // Max drawdown: worst single-trade loss as pct of its deployed capital
     let maxDrawdown = 0;
@@ -96,7 +102,14 @@ router.get('/history', async (req, res, next) => {
 
     // Monthly P&L grouped by exit date
     const monthly = await Trade.aggregate([
-      { $match: { status: TRADE_STATUSES.CLOSED, exitDate: { $exists: true }, realizedPnl: { $exists: true } } },
+      {
+        $match: {
+          userId: new mongoose.Types.ObjectId(req.userId),
+          status: TRADE_STATUSES.CLOSED,
+          exitDate: { $exists: true },
+          realizedPnl: { $exists: true },
+        },
+      },
       {
         $group: {
           _id: { year: { $year: '$exitDate' }, month: { $month: '$exitDate' } },
@@ -109,7 +122,7 @@ router.get('/history', async (req, res, next) => {
       { $limit: limit },
     ]);
 
-    const config = await Config.findOne().lean();
+    const config = await Config.findOne({ userId: req.userId }).lean();
     const initialCapital = config?.capital ?? 1_000_000;
 
     // Capital growth: cumulative P&L added to initial capital
@@ -137,13 +150,20 @@ router.get('/history', async (req, res, next) => {
 });
 
 // GET /api/performance/benchmark — portfolio capital growth vs Nifty 50, aligned monthly
-router.get('/benchmark', async (_req, res, next) => {
+router.get('/benchmark', async (req, res, next) => {
   try {
     const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
     const [monthly, config, ohlcvResult] = await Promise.all([
       Trade.aggregate([
-        { $match: { status: TRADE_STATUSES.CLOSED, exitDate: { $exists: true }, realizedPnl: { $exists: true } } },
+        {
+          $match: {
+            userId: new mongoose.Types.ObjectId(req.userId),
+            status: TRADE_STATUSES.CLOSED,
+            exitDate: { $exists: true },
+            realizedPnl: { $exists: true },
+          },
+        },
         { $group: {
           _id: { year: { $year: '$exitDate' }, month: { $month: '$exitDate' } },
           pnl: { $sum: '$realizedPnl' },
@@ -151,7 +171,7 @@ router.get('/benchmark', async (_req, res, next) => {
         { $sort: { '_id.year': 1, '_id.month': 1 } },
         { $limit: 36 },
       ]),
-      Config.findOne().lean(),
+      Config.findOne({ userId: req.userId }).lean(),
       fetchOhlcv('^NSEI', '3y', '1d').catch(() => null),
     ]);
 

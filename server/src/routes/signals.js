@@ -11,11 +11,11 @@
 import express from 'express';
 import Signal from '../models/Signal.js';
 import Config from '../models/Config.js';
-import { runFullScan } from '../scheduler/scanPipeline.js';
+import MarketState from '../models/MarketState.js';
+import { runFullScan, resolveGuards, effectiveVerdict } from '../scheduler/scanPipeline.js';
 import { evaluateSymbols } from '../services/stockDiscovery.js';
-import { buildClaudePrompt, callClaudeAPI } from '../services/claudeEngine.js';
+import { decideVerdict } from '../services/verdictEngine.js';
 import { checkGate7 } from '../services/gateChecker.js';
-import { claudeRateLimiter } from '../middleware/rateLimiter.js';
 import { logger } from '../config/logger.js';
 import { VERDICTS } from '../config/constants.js';
 
@@ -23,6 +23,31 @@ const router = express.Router();
 const VALID_VERDICTS = new Set(Object.values(VERDICTS));
 
 const VALID_CONFIDENCE = new Set(['HIGH', 'MEDIUM', 'LOW']);
+
+/**
+ * Decorate BUY-quality signals with this user's own actionability — the same
+ * portfolio-capacity guards applied at scan time (see scanPipeline.js's
+ * applyPerUserActioning), computed at read time instead of baked into the shared
+ * Signal doc. Adds `myActionability: { verdict, waitCondition }` to each BUY signal;
+ * WAIT/SKIP signals pass through unchanged (capacity guards only ever downgrade a BUY).
+ *
+ * @param {object[]} signals - Plain signal objects (already .lean())
+ * @param {string} userId
+ * @returns {Promise<object[]>}
+ */
+async function decorateWithActionability(signals, userId) {
+  if (!signals.some((s) => s.verdict === VERDICTS.BUY)) return signals;
+  const [config, marketState] = await Promise.all([
+    Config.findOne({ userId }).lean(),
+    MarketState.findOne().select('marketMode').lean(),
+  ]);
+  if (!config) return signals;
+  const guards = await resolveGuards(config, marketState?.marketMode ?? null);
+  return signals.map((s) => {
+    if (s.verdict !== VERDICTS.BUY) return s;
+    return { ...s, myActionability: effectiveVerdict(s.verdict, s.waitCondition, guards, s.sector ?? null) };
+  });
+}
 
 // GET /api/signals
 // Query params: verdict, confidence, minGates, from (YYYY-MM-DD), to (YYYY-MM-DD), limit (max 500)
@@ -54,14 +79,15 @@ router.get('/', async (req, res, next) => {
 
     const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500);
     const signals = await Signal.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
-    res.json({ success: true, data: signals, message: `${signals.length} signals retrieved` });
+    const decorated = await decorateWithActionability(signals, req.userId);
+    res.json({ success: true, data: decorated, message: `${signals.length} signals retrieved` });
   } catch (err) {
     next(err);
   }
 });
 
 // GET /api/signals/active  — must be before /:symbol
-router.get('/active', async (_req, res, next) => {
+router.get('/active', async (req, res, next) => {
   try {
     const signals = await Signal.find({
       isActive: true,
@@ -70,7 +96,8 @@ router.get('/active', async (_req, res, next) => {
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();
-    res.json({ success: true, data: signals, message: `${signals.length} active signals` });
+    const decorated = await decorateWithActionability(signals, req.userId);
+    res.json({ success: true, data: decorated, message: `${signals.length} active signals` });
   } catch (err) {
     next(err);
   }
@@ -91,9 +118,9 @@ router.post('/scan', async (_req, res, next) => {
   }
 });
 
-// POST /api/signals/test — full 8-gate + Claude check for one symbol (no persistence)
-// Must be before /:symbol. Body: { symbol: "ICICIBANK" }
-router.post('/test', claudeRateLimiter, async (req, res, next) => {
+// POST /api/signals/test — full 8-gate + deterministic-verdict check for one symbol
+// (no persistence). Must be before /:symbol. Body: { symbol: "ICICIBANK" }
+router.post('/test', async (req, res, next) => {
   try {
     const symbol = String(req.body?.symbol ?? '')
       .replace(/\.NS$/i, '')
@@ -103,7 +130,7 @@ router.post('/test', claudeRateLimiter, async (req, res, next) => {
         .status(400)
         .json({ success: false, error: 'Body must include "symbol"', code: 400 });
     }
-    const cfg = await Config.findOne()
+    const cfg = await Config.findOne({ userId: req.userId })
       .lean()
       .catch(() => null);
     const capital = cfg?.capital ?? 1_000_000;
@@ -120,11 +147,11 @@ router.post('/test', claudeRateLimiter, async (req, res, next) => {
     }
 
     const { stockData, gateResult, newsData } = candidate;
-    let claude = null;
+    // Same qualification bar as the live scan: hard block or <5 gates never gets a verdict.
+    let analysis = null;
     if (gateResult.shouldCallClaude) {
-      const prompt = buildClaudePrompt(stockData, marketData, newsData, gateResult, capital);
-      claude = await callClaudeAPI(prompt);
-      gateResult.gateDetails.gate7 = checkGate7(claude);
+      analysis = decideVerdict(stockData, marketData, gateResult);
+      gateResult.gateDetails.gate7 = checkGate7(analysis, marketData);
     }
 
     res.json({
@@ -147,22 +174,20 @@ router.post('/test', claudeRateLimiter, async (req, res, next) => {
           score: newsData.score,
           headlines: newsData.headlines,
         },
-        verdict: claude?.verdict ?? (gateResult.hardBlockFired ? 'SKIP' : 'WAIT'),
-        confidence: claude?.confidence ?? null,
-        claude: claude
+        verdict: analysis?.verdict ?? (gateResult.hardBlockFired ? 'SKIP' : 'WAIT'),
+        confidence: analysis?.confidence ?? null,
+        analysis: analysis
           ? {
-              verdict: claude.verdict,
-              confidence: claude.confidence,
-              setupType: claude.setupType,
-              entryZone: claude.entryZone,
-              stopLoss: claude.stopLoss,
-              target1: claude.target1,
-              target2: claude.target2,
-              riskReward: claude.riskReward,
-              reasoning: claude.reasoning,
-              keyRisks: claude.keyRisks,
-              tokensUsed: claude.tokensUsed,
-              costInr: claude.costInr,
+              verdict: analysis.verdict,
+              confidence: analysis.confidence,
+              setupType: analysis.setupType,
+              entryZone: analysis.entryZone,
+              stopLoss: analysis.stopLoss,
+              target1: analysis.target1,
+              target2: analysis.target2,
+              riskReward: analysis.riskReward,
+              reasoning: analysis.reasoning,
+              keyRisks: analysis.keyRisks,
             }
           : null,
       },

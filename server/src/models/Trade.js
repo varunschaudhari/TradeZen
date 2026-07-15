@@ -11,6 +11,7 @@ import { TRADE_STATUSES, EXIT_REASONS } from '../config/constants.js';
 
 const tradeSchema = new mongoose.Schema(
   {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     symbol: { type: String, required: true, uppercase: true, index: true },
     // Sector at open time (from the signal / stock master) — drives the per-sector
     // concentration caps. Null = unclassified, exempt from the sector cap.
@@ -63,7 +64,7 @@ const tradeSchema = new mongoose.Schema(
   { timestamps: true, strict: true }
 );
 
-tradeSchema.index({ symbol: 1, status: 1 });
-tradeSchema.index({ status: 1, createdAt: -1 });
+tradeSchema.index({ userId: 1, symbol: 1, status: 1 });
+tradeSchema.index({ userId: 1, status: 1, createdAt: -1 });
 
 export default mongoose.model('Trade', tradeSchema);

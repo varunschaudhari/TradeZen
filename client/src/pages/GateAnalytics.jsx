@@ -52,9 +52,9 @@ const GATE_META = {
       : null,
   },
   gate7: {
-    num: 7, label: 'Claude confidence = HIGH', type: 'HARD_BLOCK',
+    num: 7, label: 'Score confidence = HIGH', type: 'HARD_BLOCK',
     insight: (rate) => rate > 60
-      ? 'Claude is cautious — setups reaching this gate often lack enough signal quality'
+      ? 'Composite scores rarely reach the HIGH band (≥60) — setups qualify on gates but lack measured edge'
       : null,
   },
   gate8: {

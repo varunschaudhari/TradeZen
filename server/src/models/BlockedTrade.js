@@ -22,6 +22,10 @@ export const LEDGER_VERDICTS = Object.freeze(['PROTECTED', 'COST', 'FLAT']);
 
 const blockedTradeSchema = new mongoose.Schema(
   {
+    // Null for signal-quality blocks (HARD_BLOCK/QUALITY_DOWNGRADE — about the stock,
+    // shared across every user watching it) — set for portfolio-capacity blocks
+    // (CAPITAL_GUARD/SECTOR_CAP — one entry per user whose own book was full).
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     symbol: { type: String, required: true, uppercase: true },
     sessionDate: { type: String, required: true }, // YYYY-MM-DD (IST)
     blockedAt: { type: Date, required: true },
@@ -46,8 +50,10 @@ const blockedTradeSchema = new mongoose.Schema(
   { timestamps: true, strict: true }
 );
 
-// One ledger entry per symbol/session/type — doubles as the cross-cycle dedup claim.
-blockedTradeSchema.index({ symbol: 1, sessionDate: 1, blockType: 1 }, { unique: true });
-blockedTradeSchema.index({ verdict: 1, evaluatedAt: -1 });
+// One ledger entry per symbol/session/type/user — doubles as the cross-cycle dedup
+// claim. userId is null for shared quality blocks (one entry total) and a real id for
+// per-user capacity blocks (one entry per affected user).
+blockedTradeSchema.index({ symbol: 1, sessionDate: 1, blockType: 1, userId: 1 }, { unique: true });
+blockedTradeSchema.index({ userId: 1, verdict: 1, evaluatedAt: -1 });
 
 export default mongoose.model('BlockedTrade', blockedTradeSchema);

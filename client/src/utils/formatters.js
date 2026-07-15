@@ -50,6 +50,19 @@ export const formatDateTime = (date) => {
 };
 
 /**
+ * Format a Date or ISO string to IST time-of-day only (HH:MM, 24h)
+ * @param {Date|string} date
+ * @returns {string}
+ */
+export const formatTime = (date) => {
+  if (!date) return '—';
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date(date));
+};
+
+/**
  * Return how many minutes ago a timestamp was
  * @param {Date|string} date
  * @returns {string}

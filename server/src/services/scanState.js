@@ -10,7 +10,7 @@
  */
 
 import { logger } from '../config/logger.js';
-import { emitEvent, SOCKET_EVENTS } from '../socket/socketHandlers.js';
+import { emitGlobal, SOCKET_EVENTS } from '../socket/socketHandlers.js';
 
 const MAX_EVENTS = 50; // ring-buffer size for the alerts feed
 
@@ -54,7 +54,7 @@ function snapshot() {
 }
 
 function push() {
-  emitEvent(SOCKET_EVENTS.SCAN_PROGRESS, snapshot());
+  emitGlobal(SOCKET_EVENTS.SCAN_PROGRESS, snapshot());
 }
 
 /**
@@ -76,7 +76,7 @@ export function recordEvent(type, severity, message, extra = {}) {
   };
   events.unshift(evt);
   if (events.length > MAX_EVENTS) events.length = MAX_EVENTS;
-  emitEvent(SOCKET_EVENTS.MONITOR_EVENT, evt);
+  emitGlobal(SOCKET_EVENTS.MONITOR_EVENT, evt);
   return evt;
 }
 

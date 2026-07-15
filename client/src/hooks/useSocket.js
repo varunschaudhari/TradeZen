@@ -26,6 +26,18 @@ function getSocket() {
 }
 
 /**
+ * Force a fresh connection (new handshake → re-reads the session cookie server-side).
+ * Call on logout so a same-tab re-login by a different user doesn't inherit the
+ * previous user's socket room (the server authenticates the handshake, not each event).
+ */
+export function resetSocket() {
+  if (_socket) {
+    _socket.disconnect();
+    _socket = null;
+  }
+}
+
+/**
  * Connect to socket.io and manage lifecycle; returns subscribe helper.
  * Safe to call from multiple components — same underlying socket is reused.
  * @returns {{ subscribe: Function, socket: Socket }}

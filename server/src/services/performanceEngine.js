@@ -248,19 +248,21 @@ export const evaluateGoLive = (metrics, opts = {}) => {
 /**
  * Compute the full performance summary from all closed trades (for the API/dashboard).
  *
+ * @param {string} userId
  * @param {object} [opts] - { capitalStart }
  * @returns {Promise<object>} Metrics + signalAccuracy + API cost totals
  */
-export const getPerformanceSummary = async (opts = {}) => {
-  const cfg = await Config.findOne()
+export const getPerformanceSummary = async (userId, opts = {}) => {
+  const cfg = await Config.findOne({ userId })
     .lean()
     .catch(() => null);
   const capitalStart = opts.capitalStart ?? cfg?.capital ?? DEFAULT_CAPITAL;
-  const closed = await Trade.find({ status: 'CLOSED' }).populate('signalId').lean();
+  const closed = await Trade.find({ userId, status: 'CLOSED' }).populate('signalId').lean();
   const withSignal = closed.map((t) => ({ ...t, signal: t.signalId ?? null }));
 
   const metrics = computeTradeMetrics(withSignal, { capitalStart });
   const signalAccuracy = computeSignalAccuracy(withSignal);
+  // Claude spend is shared infrastructure cost — same total regardless of who's asking.
   const costAgg = await Signal.aggregate([
     { $group: { _id: null, total: { $sum: '$claudeCostInr' } } },
   ]).catch(() => []);
@@ -274,28 +276,31 @@ export const getPerformanceSummary = async (opts = {}) => {
 /**
  * Fetch closed trades (with signals) and return signal-decay flags (weekly review).
  *
+ * @param {string} userId
  * @param {object} [opts] - Forwarded to detectSignalDecay ({ threshold, minSamples })
  * @returns {Promise<Array<{ type: string, key: string, winRate: number, trades: number }>>}
  */
-export const reviewSignalDecay = async (opts = {}) => {
-  const closed = await Trade.find({ status: 'CLOSED' }).populate('signalId').lean();
+export const reviewSignalDecay = async (userId, opts = {}) => {
+  const closed = await Trade.find({ userId, status: 'CLOSED' }).populate('signalId').lean();
   const withSignal = closed.map((t) => ({ ...t, signal: t.signalId ?? null }));
   return detectSignalDecay(withSignal, opts);
 };
 
 /**
- * Recompute metrics and upsert today's daily Performance snapshot (post-trade-close).
+ * Recompute metrics and upsert today's daily Performance snapshot for one user
+ * (post-trade-close).
  *
+ * @param {string} userId
  * @returns {Promise<object>} The computed metrics
  */
-export const updatePerformance = async () => {
-  const summary = await getPerformanceSummary();
+export const updatePerformance = async (userId) => {
+  const summary = await getPerformanceSummary(userId);
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
 
   try {
     await Performance.updateOne(
-      { date: today, period: 'daily' },
+      { userId, date: today, period: 'daily' },
       {
         $set: {
           totalTrades: summary.totalTrades,

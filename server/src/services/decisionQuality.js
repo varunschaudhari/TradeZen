@@ -158,19 +158,21 @@ function weeksPaper(closed) {
 /**
  * Build the full decision-quality / calibration report (async DB + price glue).
  *
+ * @param {string} userId - Trade-based half is this user's own paper record; signal
+ *   calibration (below) stays shared — it grades the analysis, not any one portfolio.
  * @param {object} [opts] - { horizon, period }
  * @returns {Promise<object>}
  */
-export const getDecisionQualityReport = async (opts = {}) => {
+export const getDecisionQualityReport = async (userId, opts = {}) => {
   const horizon = opts.horizon ?? RESOLVE_HORIZON_DAYS;
   const period = opts.period ?? '2y';
 
   // ── 1. Trade-based (performanceEngine) ──────────────────────────────────────
-  const cfg = await Config.findOne()
+  const cfg = await Config.findOne({ userId })
     .lean()
     .catch(() => null);
   const capitalStart = cfg?.capital ?? DEFAULT_CAPITAL;
-  const closed = await Trade.find({ status: 'CLOSED' })
+  const closed = await Trade.find({ userId, status: 'CLOSED' })
     .populate('signalId')
     .lean()
     .catch(() => []);

@@ -18,7 +18,7 @@ const FUNNEL_STAGES = [
   { key: 'screened', label: 'Screened' },
   { key: 'analyzed', label: 'Analyzed' },
   { key: 'gatePassed', label: 'Passed Gates' },
-  { key: 'selected', label: 'To Claude' },
+  { key: 'selected', label: 'To Verdict' },
 ];
 
 const fmtPrice = (n) => (n == null ? '—' : `₹${Number(n).toLocaleString('en-IN')}`);
@@ -136,7 +136,7 @@ const ScanResults = () => {
               <span className="font-mono text-buy">{scan.signalsSaved ?? 0}</span>
             </span>
             <span>
-              <span className="text-slate-500">Claude calls: </span>
+              <span className="text-slate-500">Verdicts run: </span>
               <span className="font-mono text-slate-200">{scan.claudeCalls ?? 0}</span>
             </span>
             <span>

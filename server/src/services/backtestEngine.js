@@ -2,25 +2,38 @@
  * @file backtestEngine.js
  * @description Walk-forward backtester. For each historical day it reconstructs the
  *              as-of-day stock state from per-bar indicator series (Python), runs the
- *              EXACT live scorers (calculateSimonsSignals + runAllGates), and for every
- *              Claude-eligible bar (gates ≥ 5, no hard block) simulates a trade on the
- *              suggested SL/targets. Aggregates win rate / expectancy and — the key
- *              output — win rate by composite-score bucket, so the BUY threshold can be
- *              calibrated against history.
+ *              EXACT live scorers (calculateSimonsSignals + runAllGates) AND the exact
+ *              live verdict engine (decideVerdict), and for every Claude-eligible bar
+ *              (gates ≥ 5, no hard block) simulates a trade using the EXACT live exit
+ *              rule (book half at T1, then ATR-trail replaces the hard T2 close —
+ *              mirrors evaluateTrade/processTrade in tradeTracker.js bar-for-bar).
+ *              Aggregates win rate / expectancy overall, restricted to what the live
+ *              strategy actually BUYs (score confidence HIGH), and by composite-score
+ *              bucket so the BUY threshold itself can be calibrated against history.
  *
  * Honest limitations (documented so results aren't over-trusted):
- *  - BUY proxy = "Claude-eligible" (we can't run Claude over thousands of bars); the
- *    score buckets show what each threshold would have yielded.
+ *  - Levels (entry/SL/T1/T2) are a JS-side heuristic (EMA20 pullback entry, swing-low or
+ *    ATR stop, fixed 2R/3R targets) — NOT a replay of the Python S/R+Fibonacci engine,
+ *    which isn't cheap enough to run per-bar over years of history. decideVerdict() is
+ *    replayed exactly; the LEVELS it scores are an approximation of the live ones.
+ *  - marketMode is approximated from Nifty-vs-its-own-20EMA (gate 1's own signal) since
+ *    historical VIX/A-D-ratio regime data isn't recorded — BEAR-via-VIX can't replay.
  *  - Gate 8 (news) and Gate 3 (earnings) can't be replayed historically → assumed pass.
  *  - FII/sector/P-C weren't recorded historically → those composite signals are absent
  *    (so backtest scores reflect price-derived signals only — the honest historical view).
  *  - Weekly trend is approximated from the daily EMA50.
+ *  - The ATR trail's high-water mark uses the bar's HIGH (optimistic vs. live's per-quote
+ *    tracking) — backtest works in daily OHLC, not intraday ticks.
  *
  * @author TradeZen Team
  * @created 2026-06-21
+ * @lastModified 2026-07-13
  */
 
 import {
+  ATR_TRAIL_ENABLED,
+  ATR_TRAIL_MULT,
+  ATR_TRAIL_REPLACES_T2,
   BACKTEST_COST_STATUTORY_PCT,
   BACKTEST_ENTRY_EMA20_BAND,
   BACKTEST_HOLD_BUFFER,
@@ -38,11 +51,13 @@ import {
   RSI_MAX,
   RSI_MIN,
   SIMONS_POINTS,
+  VERDICTS,
 } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 import { fetchIndicatorSeries, fetchNiftySeries } from './pythonBridge.js';
 import { calculateSimonsSignals } from './simonsSignals.js';
 import { runAllGates } from './gateChecker.js';
+import { decideVerdict } from './verdictEngine.js';
 
 const round2 = (n) => (n == null ? null : Math.round(n * 100) / 100);
 
@@ -263,15 +278,20 @@ function extractSignalFlags(simons, gate, ind, proximityPct) {
 
 /**
  * Realistically simulate a long: enter at the NEXT bar's open, book half at T1 and trail
- * the stop to entry for the remainder (mirrors the live trade plan). On a bar that
- * straddles both stop and target, assume the STOP fills first (worst case). R is measured
- * in planned-risk units against the actual entry fill (captures entry slippage).
+ * the stop to entry for the remainder. Then — mirroring tradeTracker.js's live exit EXACTLY
+ * — once T1 is booked and ATR data is available, the ATR trailing stop REPLACES the hard
+ * T2 close (ATR_TRAIL_REPLACES_T2): the remaining half rides until price pulls back to
+ * highWaterMark − ATR_TRAIL_MULT×ATR (never loosens, never below entry), not merely
+ * because it touched T2. Trades without ATR data (or when the constant is off) keep the
+ * legacy hard-T2-close behavior. On a bar that straddles both stop and target, assume the
+ * STOP fills first (worst case). R is measured in planned-risk units against the actual
+ * entry fill (captures entry slippage).
  *
  * @param {object} series - Indicator series (needs open/high/low/close)
  * @param {number} signalIdx - Bar the signal fired on (entry is signalIdx + 1)
- * @param {object} levels - { sl, t1, t2, risk }
+ * @param {object} levels - { sl, t1, t2, risk, atr }
  * @param {number} holdDays - max bars to hold before a time exit (from holdWindowDays)
- * @returns {{ entry:number, exitIdx:number, reason:string, rMultiple:number, holdBars:number }|null}
+ * @returns {{ entry:number, exitIdx:number, exitPrice:number, reason:string, rMultiple:number, holdBars:number }|null}
  */
 /**
  * Round-trip transaction cost in R (risk units). Statutory NSE delivery costs (per side)
@@ -304,12 +324,17 @@ function simulateTrade(series, signalIdx, levels, holdDays) {
   const R = (price) => round2((price - entry) / risk);
   const held = (exitIdx) => exitIdx - entryIdx + 1;
   const costInR = round2(tradeCostInR(entry, atr, risk)); // constant per trade (fill/risk/ATR)
+  const atrTrailActive = ATR_TRAIL_ENABLED && atr > 0;
 
   let firstHalfR = null; // null until T1 books the first half
   let stop = sl;
+  let trailRiding = false; // true once T1 is booked AND ATR data lets the trail take over
+  let highWaterMark = entry;
+
   for (let k = entryIdx; k <= last; k += 1) {
     const lo = series.low[k];
     const hi = series.high[k];
+
     if (lo != null && lo <= stop) {
       // Worst-case: stop fills before any target on this bar.
       const stopR = R(stop);
@@ -317,31 +342,48 @@ function simulateTrade(series, signalIdx, levels, holdDays) {
       return {
         entry,
         exitIdx: k,
+        exitPrice: stop,
         reason: firstHalfR == null ? 'SL' : 'TRAIL',
         rMultiple: round2(r),
         costInR,
         holdBars: held(k),
       };
     }
-    if (firstHalfR == null && hi != null && hi >= t1) {
-      firstHalfR = R(t1); // book half at T1, trail stop to entry for the rest
-      stop = entry;
-      continue;
-    }
-    if (firstHalfR != null && hi != null && hi >= t2) {
+
+    // Hard T2 close ONLY when not riding the ATR trail (legacy path / no ATR data) —
+    // mirrors evaluateTrade's t2Hit: trade.target1Hit && !(trailRiding && ATR_TRAIL_REPLACES_T2).
+    if (firstHalfR != null && !(trailRiding && ATR_TRAIL_REPLACES_T2) && hi != null && hi >= t2) {
       return {
         entry,
         exitIdx: k,
+        exitPrice: t2,
         reason: 'T2',
         rMultiple: round2((firstHalfR + R(t2)) / 2),
         costInR,
         holdBars: held(k),
       };
     }
+
+    if (firstHalfR == null && hi != null && hi >= t1) {
+      firstHalfR = R(t1); // book half at T1, trail stop to entry for the rest
+      stop = entry;
+      highWaterMark = Math.max(highWaterMark, hi);
+      trailRiding = atrTrailActive;
+      continue; // trail doesn't ratchet on the same bar T1 was hit (matches processTrade's if/else)
+    }
+
+    // Ratchet the ATR trail upward post-T1 (never below entry, never loosens) — same
+    // formula as evaluateTrade's trailAdvanceTo: hwm − ATR_TRAIL_MULT × atr14.
+    if (firstHalfR != null && trailRiding && hi != null) {
+      highWaterMark = Math.max(highWaterMark, hi);
+      const proposed = round2(Math.max(entry, highWaterMark - ATR_TRAIL_MULT * atr));
+      if (proposed > stop) stop = proposed;
+    }
   }
-  const exitR = R(series.close[last]);
+  const exitPrice = series.close[last];
+  const exitR = R(exitPrice);
   const r = firstHalfR == null ? exitR : (firstHalfR + exitR) / 2;
-  return { entry, exitIdx: last, reason: 'TIME', rMultiple: round2(r), costInR, holdBars: held(last) };
+  return { entry, exitIdx: last, exitPrice, reason: 'TIME', rMultiple: round2(r), costInR, holdBars: held(last) };
 }
 
 /**
@@ -375,12 +417,15 @@ async function backtestSymbol(symbol, niftySeries, opts) {
     if (!freeModes.length) continue; // every mode is mid-trade here
 
     const { stockData, levels, simons } = buildStockAsOf(symbol, series, t, niftyAligned);
+    // marketMode approximation: gate 1's own bear signal (Nifty vs its 20 EMA) is the only
+    // regime input we can honestly reconstruct historically (no archived VIX/A-D ratio).
     const market = {
       nifty50: {
         price: niftyAligned[t],
         ema20: niftyEma20[t],
         aboveEma20: niftyAligned[t] > niftyEma20[t],
       },
+      marketMode: niftyAligned[t] > niftyEma20[t] ? 'BULL' : 'BEAR',
       vix: null,
       adRatio: null,
       fiiTrend: 'NEUTRAL',
@@ -388,6 +433,9 @@ async function backtestSymbol(symbol, niftySeries, opts) {
     };
     const gate = runAllGates(stockData, market, { sentiment: 'NEUTRAL', headlines: [] });
     if (!gate.shouldCallClaude || levels.entry <= levels.sl) continue;
+
+    // The EXACT live verdict engine — same function, same thresholds, as the live scan.
+    const verdictResult = decideVerdict(stockData, market, gate);
 
     // Signal flags are entry-time facts → mode-independent; compute once, share across modes.
     const proximityPct = stockData.high52w
@@ -407,6 +455,9 @@ async function backtestSymbol(symbol, niftySeries, opts) {
         tags: gate.tags,
         signalFlags,
         plannedHold: holdDays,
+        verdict: verdictResult.verdict,
+        confidence: verdictResult.confidence,
+        downgradedFrom: verdictResult.downgradedFrom ?? null,
         ...sim,
       });
       openUntil[mode] = sim.exitIdx + 1;
@@ -416,7 +467,15 @@ async function backtestSymbol(symbol, niftySeries, opts) {
 }
 
 /**
- * Aggregate trade outcomes overall and bucketed by composite score (for threshold calibration).
+ * Aggregate trade outcomes overall, bucketed by composite score (for threshold
+ * calibration), and restricted to what the CURRENT live strategy actually BUYs
+ * (`liveStrategy` — verdict === 'BUY' from the exact same decideVerdict() the scan
+ * pipeline uses). `overall`/`byScoreBucket` deliberately span every Claude-eligible bar
+ * (gates ≥ 5) regardless of score, so every possible threshold can be compared in one
+ * pass; `liveStrategy` is the one number that answers "what would today's actual
+ * pipeline have done" — the two are expected to differ, and that gap IS the score-
+ * reachability picture (see byVerdict for the raw BUY/WAIT/SKIP split).
+ *
  * @param {object[]} trades
  * @returns {object}
  */
@@ -449,10 +508,16 @@ function aggregate(trades) {
   for (const reason of ['T2', 'TRAIL', 'SL', 'TIME']) {
     byReason[reason] = trades.filter((t) => t.reason === reason).length;
   }
+  const byVerdict = {};
+  for (const v of Object.values(VERDICTS)) {
+    byVerdict[v] = trades.filter((t) => t.verdict === v).length;
+  }
   return {
     overall: summarize(trades),
+    liveStrategy: summarize(trades.filter((t) => t.verdict === VERDICTS.BUY)),
     byScoreBucket: Object.fromEntries(Object.entries(buckets).map(([k, v]) => [k, summarize(v)])),
     byExitReason: byReason,
+    byVerdict,
   };
 }
 
@@ -613,11 +678,13 @@ export const backtestSetup = async (symbol, entry, stopLoss, target1, target2) =
 
     // Realism model — shared with the research engine (simulateTrade): an entry triggers
     // when price trades through the entry level on bar i, the fill is the NEXT bar's open
-    // (no intrabar look-ahead), then half is booked at T1 + the stop trails to entry, the
-    // rest rides to T2, and the stop fills first on a bar that straddles both (worst case).
-    // R is measured against the ACTUAL fill, so entry gaps/slippage are captured.
+    // (no intrabar look-ahead), then half is booked at T1 + the stop trails to entry, then
+    // (when ATR data is available) the ATR trail REPLACES the hard T2 close exactly like
+    // live trading — the remaining half rides until the trail or a stop is hit, not merely
+    // because price touched T2. The stop fills first on a bar that straddles both target
+    // and stop (worst case). R is measured against the ACTUAL fill, so entry gaps/slippage
+    // are captured.
     const trades = [];
-    const levels = { entry, sl: stopLoss, t1: target1, t2: target2, risk };
     const MAX_HOLD = 15; // bars — the time-stop the report references
     const n = series.close.length;
     let seq = 0;
@@ -627,10 +694,14 @@ export const backtestSetup = async (symbol, entry, stopLoss, target1, target2) =
       const lo = series.low[i];
       const hi = series.high[i];
       if (lo != null && hi != null && lo <= entry && hi >= entry) {
+        // Per-entry ATR (varies with i) drives the trailing stop for this specific trade.
+        const levels = { entry, sl: stopLoss, t1: target1, t2: target2, risk, atr: series.atr14[i] ?? null };
         const sim = simulateTrade(series, i, levels, MAX_HOLD);
         if (!sim) break; // no next bar to fill the entry on
-        // Map the engine's reasons onto the report's {T1,T2,SL,TIMEOUT} taxonomy.
-        // TRAIL = T1 booked, then the trailed half stopped at entry → the trade reached T1.
+        // Map the engine's reasons onto the report's {T1,T2,SL,TIMEOUT} taxonomy. TRAIL now
+        // means "T1 booked, then the ATR-trailed remainder closed" — no longer always at
+        // breakeven, so it's still classified as a T1-reaching trade but priced at the
+        // REAL trail-stop fill (sim.exitPrice), not assumed to be target1's price.
         const exitType =
           sim.reason === 'SL'
             ? 'SL'
@@ -639,21 +710,13 @@ export const backtestSetup = async (symbol, entry, stopLoss, target1, target2) =
               : sim.reason === 'TRAIL'
                 ? 'T1'
                 : 'TIMEOUT';
-        const exitPrice =
-          exitType === 'SL'
-            ? stopLoss
-            : exitType === 'T2'
-              ? target2
-              : exitType === 'T1'
-                ? target1
-                : series.close[sim.exitIdx];
         seq += 1;
         trades.push({
           sequenceNo: seq,
           entryDate: series.date[i + 1] ?? series.date[i],
           entryPrice: round2(sim.entry),
           exitDate: series.date[sim.exitIdx],
-          exitPrice: round2(exitPrice),
+          exitPrice: round2(sim.exitPrice),
           exitType,
           realizedR: sim.rMultiple,
           holdingDays: sim.holdBars,

@@ -63,19 +63,22 @@ export function classifyOutcome(fwdReturnPct) {
 /**
  * Record one blocked trade (fire-and-forget safe; dedup via unique index).
  *
- * @param {object} input - { symbol, blockType, reason, refPrice, stopLoss?, sector?,
- *   capital, riskPct }
+ * @param {object} input - { userId?, symbol, blockType, reason, refPrice, stopLoss?,
+ *   sector?, capital, riskPct }. userId is null for shared signal-quality blocks
+ *   (HARD_BLOCK/QUALITY_DOWNGRADE) and set for per-user capacity blocks
+ *   (CAPITAL_GUARD/SECTOR_CAP) — see BlockedTrade.js.
  * @returns {Promise<object|null>} Created doc, or null (duplicate / no DB / bad input)
  */
 export const recordBlockedTrade = async (input) => {
   try {
     if (mongoose.connection.readyState !== 1) return null;
-    const { symbol, blockType, reason, refPrice, stopLoss, sector, capital, riskPct } = input;
+    const { userId, symbol, blockType, reason, refPrice, stopLoss, sector, capital, riskPct } = input;
     if (!symbol || !blockType || !(refPrice > 0)) return null;
 
     const now = new Date();
     const sized = hypotheticalPosition(refPrice, stopLoss ?? null, capital ?? 0, riskPct ?? 0);
     return await BlockedTrade.create({
+      userId: userId ?? null,
       symbol,
       sessionDate: istSessionDate(),
       blockedAt: now,
@@ -148,12 +151,15 @@ export const evaluateBlockedTrades = async () => {
 
 /**
  * Aggregate the ledger for the UI: headline "capital protected" (net, both directions)
- * plus counts by verdict and block type.
+ * plus counts by verdict and block type. Includes this user's own capacity-guard
+ * blocks (userId set) plus the shared signal-quality blocks (userId: null) — never
+ * filters the shared entries out.
  *
+ * @param {string} userId
  * @returns {Promise<object>}
  */
-export const getLedgerSummary = async () => {
-  const all = await BlockedTrade.find().lean();
+export const getLedgerSummary = async (userId) => {
+  const all = await BlockedTrade.find({ $or: [{ userId }, { userId: null }] }).lean();
   const evaluated = all.filter((b) => b.verdict != null);
   const sized = evaluated.filter((b) => b.hypotheticalPnl != null);
   const byVerdict = { PROTECTED: 0, COST: 0, FLAT: 0 };

@@ -16,6 +16,7 @@
  */
 
 import Config from '../models/Config.js';
+import MarketState from '../models/MarketState.js';
 import IntradaySignal from '../models/IntradaySignal.js';
 import Trade from '../models/Trade.js';
 import { TRADE_STATUSES } from '../config/constants.js';
@@ -100,14 +101,27 @@ function evidenceChecks(stats) {
  * Evaluate both lanes against the gate. Never throws — DB errors surface as a
  * zero-evidence gate (all checks failing), which is the safe answer.
  *
+ * @param {string} userId - Swing lane is this user's own paper-trading record;
+ *   intraday stays shared (its own global evidence window, not per-user).
  * @returns {Promise<{ swing:object, intraday:object, thresholds:object }>}
  */
-export const evaluateGoLiveGate = async () => {
-  const config = await Config.findOne().lean().catch(() => null);
+export const evaluateGoLiveGate = async (userId) => {
+  const [config, marketState] = await Promise.all([
+    Config.findOne({ userId }).lean().catch(() => null),
+    MarketState.findOne().select('dataCollectionStartedAt').lean().catch(() => null),
+  ]);
   const capital = config?.capital ?? 1_000_000;
+  // Records older than this predate the current clean observation window (e.g. trades
+  // recovered from a pre-existing backup/CSV after data loss, or an earlier prototype's
+  // signals) — excluded so the gate judges only what the system has actually produced
+  // since measurement began. Null = no cutoff (measure everything, the pre-window default).
+  const windowStart = config?.dataCollectionStartedAt ?? null;
+  const windowFilter = windowStart ? { createdAt: { $gte: windowStart } } : {};
+  const intradayWindowStart = marketState?.dataCollectionStartedAt ?? null;
+  const intradayWindowFilter = intradayWindowStart ? { createdAt: { $gte: intradayWindowStart } } : {};
 
   // ── Swing lane: closed trades, netted (on the fly for docs predating netPnl) ──
-  const closed = await Trade.find({ status: TRADE_STATUSES.CLOSED })
+  const closed = await Trade.find({ userId, status: TRADE_STATUSES.CLOSED, ...windowFilter })
     .select('entryPrice exitPrice shares realizedPnl netPnl exitDate createdAt')
     .lean()
     .catch(() => []);
@@ -128,6 +142,7 @@ export const evaluateGoLiveGate = async () => {
   const settled = await IntradaySignal.find({
     exitReason: { $ne: null },
     source: { $ne: 'MANUAL' },
+    ...intradayWindowFilter,
   })
     .select('paperPnl settledAt alertLatencyMs sessionDate')
     .lean()
@@ -164,5 +179,7 @@ export const evaluateGoLiveGate = async () => {
       stats: { ...intradayStats, avgLatencySec },
     },
     thresholds: GATE_THRESHOLDS,
+    windowStart,
+    intradayWindowStart,
   };
 };

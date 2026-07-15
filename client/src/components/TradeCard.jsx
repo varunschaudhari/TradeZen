@@ -39,7 +39,7 @@ const MiniSparkline = ({ closes, entryPrice }) => {
   );
 };
 
-const ACTION_STYLES = {
+export const ACTION_STYLES = {
   HOLD:       { box: 'bg-slate-700/40 border-slate-600 text-slate-300',  label: 'Hold' },
   TRAIL_STOP: { box: 'bg-accent/10 border-accent/40 text-accent',        label: 'Trail stop' },
   BOOK_T1:    { box: 'bg-bull/10 border-bull/40 text-bull',              label: 'Book T1' },
@@ -88,6 +88,11 @@ const TradeCard = ({ trade, sparklineCloses, onMarkT1Hit, onMarkClosed, onMarkSL
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="font-mono font-bold text-lg">{trade.symbol}</span>
+          {trade.sector && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700/50 text-slate-400 border border-slate-600/40 shrink-0 truncate max-w-[90px]">
+              {trade.sector}
+            </span>
+          )}
           {live && (
             <span className={`text-[10px] px-1.5 py-0.5 rounded border shrink-0 ${actionStyle.box}`} title={live.reason}>
               {actionStyle.label}
@@ -288,6 +293,7 @@ TradeCard.propTypes = {
   trade: PropTypes.shape({
     _id:              PropTypes.string.isRequired,
     symbol:           PropTypes.string.isRequired,
+    sector:           PropTypes.string,
     entryPrice:       PropTypes.number,
     currentPrice:     PropTypes.number,
     stopLoss:         PropTypes.number,

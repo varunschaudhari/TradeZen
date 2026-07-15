@@ -220,7 +220,7 @@ function DetailedView({ report }) {
             <span className="font-mono font-bold text-accent">{report.metadata.simonScore}/100</span>
           </div>
           <div className="flex justify-between items-center">
-            <span className="text-slate-400">Claude Confidence</span>
+            <span className="text-slate-400">Signal Confidence</span>
             <Badge text={r2.claude_confidence} type={r2.claude_confidence} />
           </div>
           <div className="flex justify-between items-center">

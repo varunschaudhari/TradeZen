@@ -10,6 +10,7 @@ import mongoose from 'mongoose';
 
 const performanceSchema = new mongoose.Schema(
   {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     date: { type: Date, required: true, index: true },
     period: { type: String, enum: ['daily', 'weekly', 'monthly'], required: true },
     totalTrades: { type: Number, default: 0 },
@@ -29,6 +30,6 @@ const performanceSchema = new mongoose.Schema(
   { timestamps: true, strict: true }
 );
 
-performanceSchema.index({ date: -1, period: 1 }, { unique: true });
+performanceSchema.index({ userId: 1, date: -1, period: 1 }, { unique: true });
 
 export default mongoose.model('Performance', performanceSchema);

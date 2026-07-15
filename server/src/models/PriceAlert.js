@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 
 const priceAlertSchema = new mongoose.Schema(
   {
+    userId:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     symbol:      { type: String, required: true, uppercase: true, trim: true, match: /^[A-Z]{1,20}$/ },
     targetPrice: { type: Number, required: true, min: 0.01 },
     direction:   { type: String, required: true, enum: ['above', 'below'] },

@@ -1,6 +1,6 @@
 # SwingTrader AI — CLAUDE.md
 
-AI-powered NSE swing trading signal platform. MERN stack + Python FastAPI + Claude Sonnet.
+Quantitative NSE swing trading signal platform. MERN stack + Python FastAPI + a deterministic verdict engine (Claude is advisory-only: Haiku news sentiment + chat widget).
 **Never places trades. Never auto-executes orders. Sends alerts and tracks positions only.**
 
 ---
@@ -9,13 +9,13 @@ AI-powered NSE swing trading signal platform. MERN stack + Python FastAPI + Clau
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  React 18 + Vite (port 3000)                                │
+│  React 18 + Vite (port 3001)                                │
 │  Tailwind CSS 3 · React Router v6 · socket.io-client        │
 │  Recharts (P&L) · lightweight-charts (candlesticks)         │
 └──────────────────────┬──────────────────────────────────────┘
-                       │ /api/* and /socket.io/* (Vite proxy → 5000)
+                       │ /api/* and /socket.io/* (Vite proxy → 5001)
 ┌──────────────────────▼──────────────────────────────────────┐
-│  Node.js 20 / Express 5 (port 5000)  ← ES Modules           │
+│  Node.js 20 / Express 5 (port 5001)  ← ES Modules           │
 │  socket.io · mongoose · node-cron · @anthropic-ai/sdk        │
 │  Winston logs · Joi validation · express-rate-limit          │
 └──────────┬───────────────────────────┬──────────────────────┘
@@ -33,7 +33,7 @@ All secrets live in `server/.env` and `python-service/.env` — never hardcoded 
 
 ## The 8-Gate Safety System
 
-This is the core of every decision. Gates run **sequentially** before any Claude call.
+This is the core of every decision. Gates run **sequentially** before the verdict is computed.
 
 | Gate | Description | Type | Blocks if |
 |------|-------------|------|-----------|
@@ -43,15 +43,28 @@ This is the core of every decision. Gates run **sequentially** before any Claude
 | G4 | RSI between 40–65 | strong filter | RSI outside sweet spot (overbought or no momentum) |
 | G5 | Volume ≥ 1.5× 20-day average | strong filter | Weak participation — no institutional confirmation |
 | G6 | Risk:Reward ≥ 2:1 | **HARD BLOCK** | Setup doesn't offer enough reward for the risk taken |
-| G7 | Claude confidence = HIGH | **HARD BLOCK** | Claude returns MEDIUM or LOW (BUY requires HIGH) |
+| G7 | Composite score confidence = HIGH | **HARD BLOCK** | Score below `SCORE_HIGH_CONFIDENCE` (60) — BUY requires the HIGH band |
 | G8 | News sentiment not NEGATIVE | **HARD BLOCK** | Adverse news environment detected |
 
 **Hard-block gates (1, 2, 3, 6, 8):** one failure cancels BUY regardless of total score.
 **Strong-filter gates (4, 5):** failures reduce score but don't individually block.
-**Claude is only called when:** `hardBlockFired === false && gatesPassed >= 5` (out of 7 pre-Claude gates).
+**The verdict engine runs only when:** `hardBlockFired === false && gatesPassed >= 5` (out of
+7 pre-verdict gates — the constant and the stored `shouldCallClaude`/`reachedClaude` field
+names are kept from the Claude era for stored-data continuity).
 
-Gate 7 is evaluated after the Claude call returns — it is not part of `runAllGates()`.
-See `server/src/services/gateChecker.js` for the full implementation.
+Gate 7 is evaluated after the verdict engine runs — it is not part of `runAllGates()`.
+See `server/src/services/gateChecker.js` and `server/src/services/verdictEngine.js`.
+
+**History (2026-07-13):** Gate 7 was originally "Claude returns HIGH confidence" — a
+Claude Sonnet call sat between the gates and every saved Signal. It was replaced by the
+deterministic `verdictEngine.js` (same inputs → same verdict; BUY = score-confidence HIGH,
+BEAR mode blocks BUY, T1_MIN_R geometry floor unchanged) because the LLM gate was the one
+unvalidated filter in the system, non-reproducible in backtests, and it starved the go-live
+evidence pipeline of BUY signals. Claude-judged signals created before this date remain in
+the DB for before/after calibration comparison; `dataCollectionStartedAt` was reset at
+cutover so the go-live gate judges only the new engine's record. Claude remains ONLY in:
+Haiku headline sentiment (`newsFetcher.js`, feeds gate 8, has a keyword fallback) and the
+Ask-Claude chat widget (`routes/chat.js`).
 
 ---
 
@@ -67,28 +80,49 @@ These are not configuration options — they are hard-coded requirements that mu
 
 4. **Daily loss pause.** If closed trades today total a loss ≥ 3% of capital, BUY signals are downgraded to WAIT for the rest of the day. Implemented in `marketScanner.js → isDailyLossPaused()`. Constant: `DAILY_LOSS_PAUSE_PCT = 3`.
 
-5. **Max 3 simultaneous positions.** Hard-coded in `MAX_OPEN_TRADES = 3` (`constants.js`). The scanner enforces this before saving any BUY signal.
+5. **Max 15 simultaneous positions.** `MAX_OPEN_TRADES = 15` (`constants.js`). Raised from the original 3-position design once risk-per-trade dropped to 0.4% — 15 concurrent positions ≈ 6% total portfolio risk if every one stops out simultaneously. The scanner enforces this before saving any BUY signal.
 
-6. **Max 60% capital deployed.** `MAX_CAPITAL_DEPLOYED_PCT = 60`. Checked against sum of all open `capitalDeployed` fields before any new BUY.
+6. **Max 95% capital deployed, regime-tiered down from there.** `MAX_CAPITAL_DEPLOYED_PCT = 95` is the absolute ceiling; the effective cap is `min(95%, DEPLOYMENT_CAP_BY_MODE[marketMode])` — 80% in BULL, 65% in MIXED, 50% in CAUTION, 20% in BEAR — so capacity shrinks as the regime degrades, not just position size. Checked against sum of all open `capitalDeployed` fields before any new BUY.
 
-7. **Never risk more than 1% per trade.** `DEFAULT_RISK_PCT = 1`. The `riskPercentage` field in `Config` is configurable (min 0.1, max 5) but 1% is the default. Position sizing: `shares = floor((capital × riskPct%) / (entry − stopLoss))`.
+7. **Never risk more than 0.4% per trade by default.** `DEFAULT_RISK_PCT = 0.4`. The `riskPercentage` field in `Config` is configurable (min 0.1, max 5). Position sizing: `shares = floor((capital × riskPct%) / (entry − stopLoss))`.
 
-8. **BUY verdict requires HIGH confidence.** If Claude returns BUY with MEDIUM or LOW confidence, `parseClaudeResponse()` in `claudeEngine.js` silently downgrades to WAIT. This is enforced in code, not just the prompt.
+7a. **Sector concentration caps.** `MAX_POSITIONS_PER_SECTOR = 3` and `MAX_SECTOR_DEPLOYED_PCT = 25` (of capital) — checked when a BUY is saved and re-checked at auto-open. Added after the book once sat 59% in financials with the position-count cap alone.
+
+8. **BUY verdict requires HIGH score confidence.** `decideVerdict()` in `verdictEngine.js` only returns BUY when the composite score reaches the HIGH band (`SCORE_HIGH_CONFIDENCE = 60`); MEDIUM → WAIT, LOW → SKIP, and BEAR market mode blocks BUY outright. The T1_MIN_R / RISK_REWARD_MIN target-geometry floor downgrades any BUY whose levels are too tight. Deterministic — enforced in code.
 
 9. **All secrets in `.env` files.** `.env` files are in `.gitignore`. Never hardcode API keys, bot tokens, or passwords.
 
 ---
 
-## Claude API cost control
+## Claude usage (post-2026-07-13: advisory only, never a gate)
 
-- Claude is called **only when 5+ pre-Claude gates pass** (`GATES_REQUIRED_FOR_CLAUDE = 5`).
-- `max_tokens = 1500` per call.
-- Pricing constants in `claudeEngine.js`: `$3/M input, $15/M output` × `₹84/USD`.
-- Cost per call is tracked in the `Signal` document (`claudeCostInr`, `claudeTokensUsed`).
-- Daily alert fires if total Claude spend exceeds ₹50 (`DAILY_CLAUDE_COST_ALERT_INR`).
-- Model: `claude-sonnet-4-6` (set via `CLAUDE_MODEL` env var, falls back to `'claude-sonnet-4-6'`).
-- **2 retries** on failure with 1.5s base delay + up to 500ms jitter.
-- Deduplication: BUY signals for the same symbol within 4 hours are not re-sent (`DEDUPLICATION_HOURS = 4`).
+The verdict pipeline makes **zero** Claude calls — `verdictEngine.js` is pure and free.
+Claude remains in exactly two places, neither of which gates a verdict:
+
+- **Headline sentiment** (`newsFetcher.js`): Haiku (`CLAUDE_SENTIMENT_MODEL`, default
+  `claude-haiku-4-5`) scores headlines for gate 8; falls back to keyword scoring
+  automatically on any API failure. Cached 6h per symbol.
+- **Ask-Claude chat** (`routes/chat.js`): the floating chat widget, 10 req/min
+  rate-limited (`claudeRateLimiter`).
+
+`Signal.claudeCostInr` / `claudeTokensUsed` are 0 on all new signals (fields kept for
+historical continuity — pre-cutover signals carry real costs).
+Deduplication: BUY signals for the same symbol within 4 hours are not re-sent (`DEDUPLICATION_HOURS = 4`).
+
+---
+
+## Go-live evidence gate
+
+`server/src/services/goLiveGate.js` decides, per lane (swing / intraday), whether the paper
+track record is statistically consistent with a real edge — a hard PASS/FAIL, not a vibe:
+≥30 settled results, ≥42-day span, positive net expectancy, profit factor ≥1.3, drawdown
+≤10% of capital (intraday also requires avg alert latency ≤90s). Exposed at
+`GET /api/intraday/golive` (despite the route, it evaluates both lanes).
+
+`Config.dataCollectionStartedAt` is the evidence-window cutoff — trades/signals created
+before it are excluded from the gate's stats entirely. Set this whenever a clean observation
+period begins (e.g. after a data-recovery event, or after a prototype strategy is replaced),
+so recovered/legacy records are never mistaken for the current system's own decisions.
 
 ---
 
@@ -115,13 +149,13 @@ WAIT signal expiry: 3 days from creation.
 
 | Service | Port | Health endpoint |
 |---------|------|-----------------|
-| React (Vite dev) | 3000 | `http://localhost:3000` |
-| React (Nginx prod) | 3000→80 | `http://localhost:80` |
-| Node/Express | 5000 | `GET /health` → `{ success: true }` |
+| React (Vite dev) | 3001 | `http://localhost:3001` |
+| React (Nginx prod) | 3001→80 | `http://localhost:80` |
+| Node/Express | 5001 | `GET /health` → `{ success: true }` |
 | Python FastAPI | 8001 | `GET /health` → `{ status: "healthy" }` |
 | MongoDB | 27017 | — |
 
-The Vite dev server proxies `/api/*` and `/socket.io/*` → `http://localhost:5000`.
+The Vite dev server proxies `/api/*` and `/socket.io/*` → `http://localhost:5001`.
 The Nginx production config (`client/nginx.conf`) does the same for the built dist.
 
 ---
@@ -191,7 +225,7 @@ swing-trader/
 │   │   │   └── market.js       GET / (Python proxy + Config.marketMode merge)
 │   │   ├── services/
 │   │   │   ├── gateChecker.js  8-gate system (runAllGates, checkGate7)
-│   │   │   ├── claudeEngine.js buildClaudePrompt, callClaudeAPI, estimateCostInr
+│   │   │   ├── verdictEngine.js decideVerdict — deterministic verdict/levels/reasoning
 │   │   │   ├── pythonBridge.js analyzeStocks, fetchMarketData, fetchOhlcv
 │   │   │   ├── newsFetcher.js  fetchNewsAndSentiment → { sentiment, headlines, score }
 │   │   │   └── notifier.js     Telegram + email alerts (10 alert types, dedup)
@@ -307,17 +341,22 @@ All defined in `server/src/config/constants.js` (backend) and mirrored in `clien
 ## Gate thresholds (all in `server/src/config/constants.js`)
 
 ```javascript
-RSI_MIN = 40, RSI_MAX = 65          // Gate 4
-VOLUME_RATIO_MIN = 1.5              // Gate 5
+RSI_MIN = 40, RSI_MAX = 70          // Gate 4 (RSI_MAX raised from 65 — see constants.js comment)
+VOLUME_RATIO_MIN = 1.0              // Gate 5 (lowered from 1.5 — measured edge was inverted at 1.5×)
 RISK_REWARD_MIN = 2.0               // Gate 6
 EARNINGS_BUFFER_DAYS = 15           // Gate 3
-GATES_REQUIRED_FOR_CLAUDE = 5       // minimum gates to trigger Claude call
+GATES_REQUIRED_FOR_CLAUDE = 5       // minimum gates before the verdict engine runs (legacy name)
 SL_WARNING_PCT = 2                  // % distance to SL that triggers warning event
 DAILY_LOSS_PAUSE_PCT = 3            // daily loss % that pauses BUY signals
-MAX_OPEN_TRADES = 3
-MAX_CAPITAL_DEPLOYED_PCT = 60
-DEFAULT_RISK_PCT = 1
+MAX_OPEN_TRADES = 15                // raised from 3 once risk-per-trade dropped to 0.4%
+MAX_CAPITAL_DEPLOYED_PCT = 95       // absolute ceiling — see DEPLOYMENT_CAP_BY_MODE below
+DEFAULT_RISK_PCT = 0.4              // lowered from 1% to keep aggregate risk in check at 15 positions
 DEDUPLICATION_HOURS = 4             // min gap between BUY signals for same symbol
+MAX_POSITIONS_PER_SECTOR = 3        // portfolio-level guard, checked at BUY-save and auto-open
+MAX_SECTOR_DEPLOYED_PCT = 25        // % of capital, same sector — the book once sat 59% in financials
+DEPLOYMENT_CAP_BY_MODE = { BULL: 80, MIXED: 65, CAUTION: 50, BEAR: 20 } // min() with MAX_CAPITAL_DEPLOYED_PCT
+T1_MIN_R = 1.5                      // BUY downgraded to WAIT if target1 < 1.5× risk
+ATR_TRAIL_MULT = 2.75               // post-T1 stop trails to hwm − this × ATR(14)
 ```
 
 ---
@@ -405,7 +444,7 @@ node test-integration.mjs
 | `EMAIL_TO` | Alert recipient |
 | `PYTHON_SERVICE_URL` | `http://localhost:8001` for local; docker-compose overrides to `http://python-service:8001` |
 | `SCAN_INTERVAL_MINUTES` | Default 15 |
-| `PORT` | Default 5000 |
+| `PORT` | Default 5001 |
 
 `python-service/.env` — only two variables: `PORT=8001`, `LOG_LEVEL=INFO`.
 
@@ -437,7 +476,7 @@ CSS utility classes in `client/src/index.css`: `.card`, `.badge-buy`, `.badge-wa
 ## What does NOT exist (intentional gaps)
 
 - **No authentication.** The API has no auth middleware. Adding JWT is the logical next step.
-- **No automatic price refresh.** `/api/prices/update` exists but nothing calls it on a timer. Open trade P&L is stale until manually POSTed.
+- ~~No automatic price refresh~~ — **stale, this exists.** JOB 12 (`position-monitor`, `scheduler/index.js`) calls `refreshOpenPositions()` every 2 minutes during market hours, entirely server-side — gated only on `isMarketOpen()`, independent of `Config.scannerEnabled` and of any browser tab being open.
 - **No backtesting.** No `/api/backtest` route. Historical gate replay is the logical next step.
 - **No broker API.** Zero integration with Zerodha, Upstox, or any broker. By design.
 - **No auto-order execution.** See security constraints above. This is a permanent constraint.

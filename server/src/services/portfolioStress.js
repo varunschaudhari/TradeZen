@@ -15,14 +15,15 @@ import { logger } from '../config/logger.js';
  * @param {number} newTradeSL - Stop loss of new trade
  * @param {number} newTradeShares - Share count of new trade
  * @param {string} newTradeSymbol - Symbol of new trade
+ * @param {string} userId - Whose capital/open trades to stress-test
  * @returns {Promise<Object>} stress test results
  */
-export async function analyzePortfolioStress(newTradeEntry, newTradeSL, newTradeShares, newTradeSymbol) {
+export async function analyzePortfolioStress(newTradeEntry, newTradeSL, newTradeShares, newTradeSymbol, userId) {
   try {
     // Fetch config and open trades
     const [config, openTrades] = await Promise.all([
-      Config.findOne().lean(),
-      Trade.find({ status: 'OPEN' }).lean(),
+      Config.findOne({ userId }).lean(),
+      Trade.find({ userId, status: 'OPEN' }).lean(),
     ]);
 
     if (!config) {

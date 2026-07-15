@@ -30,13 +30,16 @@ import { logger } from '../config/logger.js';
  * Generate a 10-section comprehensive analysis report for a stock
  * @param {string} symbol - NSE stock symbol
  * @param {object} marketData - Current market context
+ * @param {string} userId - Whose portfolio-stress/trade-journal sections to compute
  * @returns {Promise<object>} Full analysis report
  */
-// In-memory per-symbol report cache. The report is expensive (2-year backtest replay +
-// several Python data fetches); within a few minutes the underlying data barely moves,
-// so caching makes re-opens instant and shields the Python service from repeat load.
+// In-memory per-(symbol,user) report cache. The report is expensive (2-year backtest
+// replay + several Python data fetches); within a few minutes the underlying data barely
+// moves, so caching makes re-opens instant and shields the Python service from repeat
+// load. Keyed by user too — section13_portfolioStress/section21_tradeJournal are this
+// user's own capital/trades, so the cache can't be shared across users.
 const REPORT_CACHE_TTL_MS = 5 * 60 * 1000;
-const reportCache = new Map(); // symbol -> { report, at }
+const reportCache = new Map(); // "symbol:userId" -> { report, at }
 
 /**
  * Compute the canonical "Simons" composite score (0–100) fresh from current data.
@@ -82,8 +85,9 @@ async function computeSimonsComposite(symbol, detail, marketData) {
   }
 }
 
-export async function generateAnalysisReport(symbol, marketData = null) {
-  const cached = reportCache.get(symbol);
+export async function generateAnalysisReport(symbol, marketData = null, userId = null) {
+  const cacheKey = `${symbol}:${userId}`;
+  const cached = reportCache.get(cacheKey);
   if (cached && Date.now() - cached.at < REPORT_CACHE_TTL_MS) {
     return { ...cached.report, cached: true, cacheAgeMs: Date.now() - cached.at };
   }
@@ -149,9 +153,9 @@ export async function generateAnalysisReport(symbol, marketData = null) {
       generatePatternComparisonSection(symbol, detail),
       generateBacktestSection(symbol, entry, sl, t1, t2),
       generateLiquiditySection(symbol, price, entry, sl, t1, t2),
-      generatePortfolioStressSection(entry, sl, latestSignal?.shares ?? 1, symbol),
+      generatePortfolioStressSection(entry, sl, latestSignal?.shares ?? 1, symbol, userId),
       generateEarningsSection(symbol, detail.earningsTimestamp, entry, t1, t2, price, ind.atr14),
-      generateTradeJournalSection(symbol, detail.simonsScore ?? 50, 'CUSTOM', (t2 - entry) / (entry - sl)),
+      generateTradeJournalSection(symbol, detail.simonsScore ?? 50, 'CUSTOM', (t2 - entry) / (entry - sl), userId),
       generatePeerComparison(symbol, entry, sl, t1, t2, price, detail),
       analyzeSectorMomentum(symbol, detail),
     ]);
@@ -262,7 +266,7 @@ export async function generateAnalysisReport(symbol, marketData = null) {
       },
     };
 
-    reportCache.set(symbol, { report, at: Date.now() });
+    reportCache.set(cacheKey, { report, at: Date.now() });
     return report;
   } catch (err) {
     logger.error(`Analysis report failed for ${symbol}`, { error: err.message });
@@ -768,9 +772,9 @@ async function generateLiquiditySection(symbol, currentPrice, entry, sl, t1, t2)
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function generatePortfolioStressSection(entry, sl, shares, symbol) {
+async function generatePortfolioStressSection(entry, sl, shares, symbol, userId) {
   try {
-    const stress = await analyzePortfolioStress(entry, sl, shares, symbol);
+    const stress = await analyzePortfolioStress(entry, sl, shares, symbol, userId);
 
     if (!stress) {
       return {
@@ -982,9 +986,9 @@ function generateMonteCarloSection(entry, sl, t1, t2, currentPrice, volatility) 
   }
 }
 
-async function generateTradeJournalSection(symbol, simonScore, setupType, riskReward) {
+async function generateTradeJournalSection(symbol, simonScore, setupType, riskReward, userId) {
   try {
-    const journal = await searchTradeJournal(symbol, simonScore, setupType, riskReward);
+    const journal = await searchTradeJournal(symbol, simonScore, setupType, riskReward, userId);
 
     if (!journal) {
       return { status: 'ERROR', message: 'Journal search failed', available: false };

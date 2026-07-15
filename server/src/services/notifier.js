@@ -10,6 +10,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 import nodemailer from 'nodemailer';
 import Config from '../models/Config.js';
+import User from '../models/User.js';
 import { logger } from '../config/logger.js';
 
 // ── Formatters ────────────────────────────────────────────────────────────────
@@ -56,16 +57,45 @@ function getMailer() {
   return _mailer;
 }
 
-// ── Config cache (1-min TTL) ──────────────────────────────────────────────────
-let _cfg = null;
-let _cfgAt = 0;
-async function getCfg() {
-  if (_cfg && Date.now() - _cfgAt < 60_000) return _cfg;
-  _cfg = await Config.findOne()
+// ── Per-user Config cache (1-min TTL) ─────────────────────────────────────────
+// Every alert now resolves to a specific user's own Telegram chat / email — there is
+// no single shared recipient anymore. getCfg(null) (dead-code callers, tests) just
+// falls through to the env-var fallbacks in sendTelegram/sendEmail.
+const _cfgCache = new Map(); // userId string -> { cfg, at }
+async function getCfg(userId) {
+  if (!userId) return null;
+  const key = String(userId);
+  const hit = _cfgCache.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.cfg;
+  const cfg = await Config.findOne({ userId }).lean().catch(() => null);
+  _cfgCache.set(key, { cfg, at: Date.now() });
+  return cfg;
+}
+
+/** Every user's id — for alerts about shared state (market regime, intraday, cost). */
+async function allUserIds() {
+  const users = await User.find().select('_id').lean().catch(() => []);
+  return users.map((u) => String(u._id));
+}
+
+/** Ids of every user who has `symbol` on their own watchlist. */
+async function usersWatching(symbol) {
+  const configs = await Config.find({ 'watchlist.symbol': symbol })
+    .select('userId')
     .lean()
-    .catch(() => null);
-  _cfgAt = Date.now();
-  return _cfg;
+    .catch(() => []);
+  return configs.map((c) => String(c.userId));
+}
+
+/** Run `sendOne(userId)` for each id, independently — one failure never blocks the rest. */
+async function fanOut(userIds, sendOne) {
+  await Promise.all(
+    (userIds ?? []).map((userId) =>
+      Promise.resolve(sendOne(userId)).catch((err) =>
+        logger.error('notifier: per-user send failed', { userId, error: err.message })
+      )
+    )
+  );
 }
 
 // ── Deduplication (4-hour per alert-key) ─────────────────────────────────────
@@ -80,17 +110,17 @@ function isDupe(key) {
 }
 
 // ── Low-level send helpers ────────────────────────────────────────────────────
-async function sendTelegram(text) {
+async function sendTelegram(text, userId) {
   const bot = getBot();
   if (!bot) {
     logger.debug('Telegram not configured — skipping alert');
     return;
   }
   try {
-    const cfg = await getCfg();
+    const cfg = await getCfg(userId);
     const chatId = process.env.TELEGRAM_CHAT_ID || cfg?.telegramChatId;
     if (!chatId) {
-      logger.warn('No Telegram chat ID configured');
+      logger.warn('No Telegram chat ID configured', { userId });
       return;
     }
     await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
@@ -99,14 +129,14 @@ async function sendTelegram(text) {
   }
 }
 
-async function sendEmail({ subject, html }) {
+async function sendEmail({ subject, html }, userId) {
   const mailer = getMailer();
   if (!mailer) {
     logger.debug('Email not configured — skipping alert');
     return;
   }
   try {
-    const cfg = await getCfg();
+    const cfg = await getCfg(userId);
     const to = process.env.EMAIL_TO || cfg?.emailRecipient;
     if (!to) {
       logger.warn('No email recipient configured');
@@ -147,13 +177,73 @@ function row(label, value) {
   return `<tr><td>${label}</td><td><strong>${value}</strong></td></tr>`;
 }
 
+// ── Daily Claude cost alert — once per IST calendar day, not the shared 4h dedup ────
+let _costAlertDate = null;
+function alreadyAlertedForDate(dateStr) {
+  if (_costAlertDate === dateStr) return true;
+  _costAlertDate = dateStr;
+  return false;
+}
+
+export const sendDailyClaudeCostAlert = async (totalCostInr, thresholdInr, signalCount) => {
+  const istDate = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  if (alreadyAlertedForDate(istDate)) return;
+
+  const tg = [
+    '💰 *Daily Claude Cost Alert*',
+    '',
+    `Spend today: ${fmtINR(totalCostInr)} (threshold ${fmtINR(thresholdInr)})`,
+    `Signals analyzed today: ${signalCount}`,
+  ].join('\n');
+  const html = htmlWrap(
+    'Daily Claude Cost Alert',
+    `<table>${row('Spend today', fmtINR(totalCostInr))}${row('Threshold', fmtINR(thresholdInr))}${row('Signals analyzed', signalCount)}</table>`
+  );
+  // Claude spend is shared infrastructure cost — every user should know, not just one.
+  await fanOut(await allUserIds(), (userId) =>
+    Promise.all([
+      sendTelegram(tg, userId),
+      sendEmail(
+        { subject: `SwingTrader AI — Daily Claude cost ${fmtINR(totalCostInr)} exceeds ${fmtINR(thresholdInr)} threshold`, html },
+        userId
+      ),
+    ])
+  );
+  logger.warn('Daily Claude cost alert fired', { totalCostInr, thresholdInr, signalCount });
+};
+
+// ── Holiday reminder — fired the prior trading evening (eveningSummary.js) ─────
+export const sendHolidayReminder = async (holiday) => {
+  if (isDupe(`holiday:${holiday.date}`)) return;
+
+  const tg = [
+    '📅 *Market Holiday Tomorrow*',
+    '',
+    `NSE is closed on *${holiday.date}* for *${holiday.name}*.`,
+    'No scans, price refresh, or alerts until the next trading session.',
+  ].join('\n');
+  const html = htmlWrap(
+    'Market Holiday Reminder',
+    `<table>${row('Date', holiday.date)}${row('Holiday', holiday.name)}</table>
+     <p style="color:#94a3b8;font-size:13px;margin-top:8px">
+       No scans, price refresh, or alerts until the next trading session.
+     </p>`
+  );
+  await fanOut(await allUserIds(), (userId) =>
+    Promise.all([
+      sendTelegram(tg, userId),
+      sendEmail({ subject: `SwingTrader AI — NSE closed ${holiday.date} (${holiday.name})`, html }, userId),
+    ])
+  );
+  logger.info('Holiday reminder sent', { date: holiday.date, name: holiday.name });
+};
+
 // ── 1. BUY signal alert ───────────────────────────────────────────────────────
 export const sendBuyAlert = async (signal) => {
   if (isDupe(`buy:${signal.symbol}`)) return;
+  const userIds = await usersWatching(signal.symbol);
+  if (!userIds.length) return;
 
-  // paperTradeMode lives on Config, not on the Signal's marketContext subdocument
-  const cfg = await getCfg();
-  const paperTag = cfg?.paperTradeMode !== false ? '📋 _Paper Trade_' : '🔴 _LIVE Trade_';
   const entryHigh = signal.entryZone?.high;
   const simons = (signal.simonsSignals?.length ? signal.simonsSignals : signal.tags) ?? [];
   const tg = [
@@ -179,7 +269,7 @@ export const sendBuyAlert = async (signal) => {
     '',
     `🧠 ${signal.reasoning ?? ''}`,
     '',
-    paperTag,
+    '{{PAPER_TAG}}',
   ]
     .filter((l) => l !== null)
     .join('\n');
@@ -211,17 +301,24 @@ export const sendBuyAlert = async (signal) => {
   `
   );
 
-  await Promise.all([
-    sendTelegram(tg),
-    sendEmail({ subject: `🚀 BUY: ${signal.symbol} (${signal.confidence})`, html }),
-  ]);
+  // paperTradeMode lives on each recipient's own Config, not on the shared Signal doc.
+  await fanOut(userIds, async (userId) => {
+    const cfg = await getCfg(userId);
+    const paperTag = cfg?.paperTradeMode !== false ? '📋 _Paper Trade_' : '🔴 _LIVE Trade_';
+    await Promise.all([
+      sendTelegram(tg.replace('{{PAPER_TAG}}', paperTag), userId),
+      sendEmail({ subject: `🚀 BUY: ${signal.symbol} (${signal.confidence})`, html }, userId),
+    ]);
+  });
 
-  logger.info(`BUY alert sent for ${signal.symbol}`);
+  logger.info(`BUY alert sent for ${signal.symbol}`, { recipients: userIds.length });
 };
 
 // ── 2. WAIT → BUY upgrade ─────────────────────────────────────────────────────
 export const sendWaitToBuyUpgrade = async (signal) => {
   if (isDupe(`upgrade:${signal.symbol}`)) return;
+  const userIds = await usersWatching(signal.symbol);
+  if (!userIds.length) return;
 
   const tg = [
     `⬆️ *UPGRADE: WAIT → BUY — ${signal.symbol}*`,
@@ -233,32 +330,35 @@ export const sendWaitToBuyUpgrade = async (signal) => {
     `Entry trigger met: ${signal.entryTrigger ?? '—'}`,
   ].join('\n');
 
-  await Promise.all([
-    sendTelegram(tg),
-    sendEmail({
-      subject: `⬆️ UPGRADED to BUY: ${signal.symbol}`,
-      html: htmlWrap(
-        `⬆️ BUY Upgrade — ${signal.symbol}`,
-        `
-        <table>
-          ${row('Previous Verdict', 'WAIT')}
-          ${row('New Verdict', '<span class="buy">BUY</span>')}
-          ${row('Entry Zone', `${fmtINR(signal.entryZone?.low)} – ${fmtINR(signal.entryZone?.high)}`)}
-          ${row('Stop Loss', fmtINR(signal.stopLoss))}
-          ${row('Target 1', fmtINR(signal.target1))}
-          ${row('R:R', `${fmt(signal.riskReward)}:1`)}
-        </table>
-        <p style="font-size:14px">Trigger: ${signal.entryTrigger ?? '—'}</p>
-      `
-      ),
-    }),
-  ]);
-  logger.info(`Upgrade alert sent for ${signal.symbol}`);
+  const html = htmlWrap(
+    `⬆️ BUY Upgrade — ${signal.symbol}`,
+    `
+    <table>
+      ${row('Previous Verdict', 'WAIT')}
+      ${row('New Verdict', '<span class="buy">BUY</span>')}
+      ${row('Entry Zone', `${fmtINR(signal.entryZone?.low)} – ${fmtINR(signal.entryZone?.high)}`)}
+      ${row('Stop Loss', fmtINR(signal.stopLoss))}
+      ${row('Target 1', fmtINR(signal.target1))}
+      ${row('R:R', `${fmt(signal.riskReward)}:1`)}
+    </table>
+    <p style="font-size:14px">Trigger: ${signal.entryTrigger ?? '—'}</p>
+  `
+  );
+
+  await fanOut(userIds, (userId) =>
+    Promise.all([
+      sendTelegram(tg, userId),
+      sendEmail({ subject: `⬆️ UPGRADED to BUY: ${signal.symbol}`, html }, userId),
+    ])
+  );
+  logger.info(`Upgrade alert sent for ${signal.symbol}`, { recipients: userIds.length });
 };
 
 // ── 2b. Entry-zone hit (intraday watcher) ─────────────────────────────────────
 export const sendEntryZoneAlert = async (signal, price) => {
   if (isDupe(`entryzone:${signal._id ?? signal.symbol}`)) return;
+  const userIds = await usersWatching(signal.symbol);
+  if (!userIds.length) return;
 
   const tg = [
     `🎯 *ENTRY ZONE HIT — ${signal.symbol}*`,
@@ -292,52 +392,83 @@ export const sendEntryZoneAlert = async (signal, price) => {
   `
   );
 
-  await Promise.all([
-    sendTelegram(tg),
-    sendEmail({ subject: `🎯 Entry zone hit: ${signal.symbol} @ ${fmtINR(price)}`, html }),
-  ]);
-  logger.info(`Entry-zone alert sent for ${signal.symbol}`);
+  await fanOut(userIds, (userId) =>
+    Promise.all([
+      sendTelegram(tg, userId),
+      sendEmail({ subject: `🎯 Entry zone hit: ${signal.symbol} @ ${fmtINR(price)}`, html }, userId),
+    ])
+  );
+  logger.info(`Entry-zone alert sent for ${signal.symbol}`, { recipients: userIds.length });
 };
 
-// ── 2c. Intraday ORB breakout (EXPERIMENTAL — paper-tracked, not a trade call) ──
+// ── 2c. Intraday strategy trigger (EXPERIMENTAL — paper-tracked, not a trade call) ──
+// Covers all three intraday setups (ORB, VWAP_REVERSION, MOMENTUM_CONTINUATION); the
+// thesis line adapts to setupType + direction so a SHORT breakdown or a mean-reversion
+// fade reads correctly instead of always saying "broke above."
+const SETUP_LABELS = {
+  ORB: 'ORB',
+  VWAP_REVERSION: 'VWAP Reversion',
+  MOMENTUM_CONTINUATION: 'Momentum Continuation',
+};
+
+function intradayThesisLine(sig) {
+  const isLong = sig.direction !== 'SHORT';
+  if (sig.setupType === 'VWAP_REVERSION') {
+    return `Extended ${isLong ? 'below' : 'above'} VWAP band, fading back toward ${fmtINR(sig.vwap)}`;
+  }
+  if (sig.setupType === 'MOMENTUM_CONTINUATION') {
+    return `Pullback to EMA9 within an established ${isLong ? 'up' : 'down'}trend`;
+  }
+  return isLong
+    ? `Broke above opening range high ${fmtINR(sig.orHigh)} (range ${fmtINR(sig.orLow)} – ${fmtINR(sig.orHigh)})`
+    : `Broke below opening range low ${fmtINR(sig.orLow)} (range ${fmtINR(sig.orLow)} – ${fmtINR(sig.orHigh)})`;
+}
+
 export const sendOrbAlert = async (sig) => {
-  if (isDupe(`orb:${sig.symbol}:${sig.sessionDate}`)) return;
+  if (isDupe(`intraday:${sig.symbol}:${sig.sessionDate}:${sig.setupType}:${sig.direction}`)) return;
+
+  const label = SETUP_LABELS[sig.setupType] ?? sig.setupType ?? 'Intraday';
+  const dirTag = sig.direction === 'SHORT' ? 'SHORT' : 'LONG';
 
   const tg = [
-    `⚡ *INTRADAY ORB — ${sig.symbol}* _(experimental)_`,
+    `⚡ *INTRADAY ${label.toUpperCase()} — ${sig.symbol} (${dirTag})* _(experimental)_`,
     '',
-    `Broke above opening range high ${fmtINR(sig.orHigh)} (range ${fmtINR(sig.orLow)} – ${fmtINR(sig.orHigh)})`,
+    intradayThesisLine(sig),
     `Live: ${fmtINR(sig.breakoutPrice)} | VWAP: ${fmtINR(sig.vwap)} | Rel Vol: ${fmt(sig.relVolume, 1)}×`,
-    `🛑 Suggested SL: ${fmtINR(sig.suggestedStop)} | 🎯 Measured move: ${fmtINR(sig.suggestedTarget)}`,
+    `🛑 Suggested SL: ${fmtINR(sig.suggestedStop)} | 🎯 Target: ${fmtINR(sig.suggestedTarget)}`,
     sig.shares ? `📦 Paper plan: ${sig.shares} shares ≈ ${fmtINR(sig.capitalDeployed)} (virtual capital)` : null,
     '',
-    '📊 _Paper-tracked only — this alert builds the ORB track record; it is not a trade call yet._',
+    `📊 _Paper-tracked only — this alert builds the ${label} track record; it is not a trade call yet._`,
     '⏱ Data is ~15 min delayed (yfinance). Square off any intraday position by 15:15 IST.',
     '_TradeZen never auto-executes._',
   ].join('\n');
 
   const html = htmlWrap(
-    `⚡ Intraday ORB — ${sig.symbol} (experimental)`,
+    `⚡ Intraday ${label} — ${sig.symbol} (${dirTag}, experimental)`,
     `
     <table>
-      ${row('Breakout Price', fmtINR(sig.breakoutPrice))}
-      ${row('Opening Range', `${fmtINR(sig.orLow)} – ${fmtINR(sig.orHigh)} (${sig.orWindowMinutes} min)`)}
+      ${row('Direction', dirTag)}
+      ${row('Entry Price', fmtINR(sig.breakoutPrice))}
+      ${sig.orHigh != null ? row('Opening Range', `${fmtINR(sig.orLow)} – ${fmtINR(sig.orHigh)} (${sig.orWindowMinutes} min)`) : ''}
       ${row('VWAP', fmtINR(sig.vwap))}
       ${row('Relative Volume', `${fmt(sig.relVolume, 1)}×`)}
       ${row('Suggested SL', fmtINR(sig.suggestedStop))}
-      ${row('Measured-Move Target', fmtINR(sig.suggestedTarget))}
+      ${row('Target', fmtINR(sig.suggestedTarget))}
       ${row('Session', sig.sessionDate)}
     </table>
-    <p style="font-size:13px;color:#f59e0b">📊 Experimental — paper-tracked to build the ORB
+    <p style="font-size:13px;color:#f59e0b">📊 Experimental — paper-tracked to build the ${label}
     track record. Not a trade call. Data ~15 min delayed; square off by 15:15 IST.</p>
   `
   );
 
-  await Promise.all([
-    sendTelegram(tg),
-    sendEmail({ subject: `⚡ ORB (experimental): ${sig.symbol} @ ${fmtINR(sig.breakoutPrice)}`, html }),
-  ]);
-  logger.info(`ORB alert sent for ${sig.symbol}`);
+  // Intraday is shared/global (not per-user) — every registered user gets it.
+  await fanOut(await allUserIds(), (userId) =>
+    Promise.all([
+      sendTelegram(tg, userId),
+      sendEmail({ subject: `⚡ ${label} (experimental): ${sig.symbol} ${dirTag} @ ${fmtINR(sig.breakoutPrice)}`, html }, userId),
+    ])
+  );
+  logger.info(`Intraday ${label} alert sent for ${sig.symbol}`, { direction: sig.direction });
 };
 
 // ── 2d. ORB square-off reminder (15:00 IST — intraday positions close by 15:15) ─
@@ -359,7 +490,7 @@ export const sendOrbSquareOffReminder = async (signals) => {
     '_must not be carried overnight. Paper exits settle automatically at 15:20._',
   ].join('\n');
 
-  await sendTelegram(tg);
+  await fanOut(await allUserIds(), (userId) => sendTelegram(tg, userId));
   logger.info(`ORB square-off reminder sent (${signals.length} open)`);
 };
 
@@ -378,12 +509,13 @@ export const sendSlWarning = async (trade) => {
   ].join('\n');
 
   await Promise.all([
-    sendTelegram(tg),
-    sendEmail({
-      subject: `⚠️ SL Warning: ${trade.symbol} approaching stop loss`,
-      html: htmlWrap(
-        `⚠️ Stop Loss Warning — ${trade.symbol}`,
-        `
+    sendTelegram(tg, trade.userId),
+    sendEmail(
+      {
+        subject: `⚠️ SL Warning: ${trade.symbol} approaching stop loss`,
+        html: htmlWrap(
+          `⚠️ Stop Loss Warning — ${trade.symbol}`,
+          `
         <table>
           ${row('Symbol', trade.symbol)}
           ${row('Current Price', fmtINR(trade.currentPrice))}
@@ -394,8 +526,10 @@ export const sendSlWarning = async (trade) => {
         </table>
         <p style="color:#f59e0b;font-size:13px">Review your stop loss. Human confirmation required before any action.</p>
       `
-      ),
-    }),
+        ),
+      },
+      trade.userId
+    ),
   ]);
   logger.info(`SL warning sent for ${trade.symbol}`);
 };
@@ -416,12 +550,13 @@ export const sendTarget1Hit = async (trade) => {
   ].join('\n');
 
   await Promise.all([
-    sendTelegram(tg),
-    sendEmail({
-      subject: `🎯 T1 Hit: ${trade.symbol} — SL trailed to ${fmtINR(trailedTo)}`,
-      html: htmlWrap(
-        `🎯 Target 1 Hit — ${trade.symbol}`,
-        `
+    sendTelegram(tg, trade.userId),
+    sendEmail(
+      {
+        subject: `🎯 T1 Hit: ${trade.symbol} — SL trailed to ${fmtINR(trailedTo)}`,
+        html: htmlWrap(
+          `🎯 Target 1 Hit — ${trade.symbol}`,
+          `
         <table>
           ${row('Target 1', `${fmtINR(trade.target1)} ✓`)}
           ${row('Target 2', fmtINR(trade.target2))}
@@ -431,8 +566,10 @@ export const sendTarget1Hit = async (trade) => {
         </table>
         <p style="color:#22c55e;font-size:13px">Stop trailed to ${fmtINR(trailedTo)} and will ratchet up with the ATR trail as the price makes new highs.</p>
       `
-      ),
-    }),
+        ),
+      },
+      trade.userId
+    ),
   ]);
   logger.info(`Target 1 alert sent for ${trade.symbol}`);
 };
@@ -451,12 +588,13 @@ export const sendTarget2Hit = async (trade) => {
   ].join('\n');
 
   await Promise.all([
-    sendTelegram(tg),
-    sendEmail({
-      subject: `🏆 T2 Hit: ${trade.symbol} — Full target achieved`,
-      html: htmlWrap(
-        `🏆 Target 2 Hit — ${trade.symbol}`,
-        `
+    sendTelegram(tg, trade.userId),
+    sendEmail(
+      {
+        subject: `🏆 T2 Hit: ${trade.symbol} — Full target achieved`,
+        html: htmlWrap(
+          `🏆 Target 2 Hit — ${trade.symbol}`,
+          `
         <table>
           ${row('Target 2', `${fmtINR(trade.target2)} ✓`)}
           ${row('Entry', fmtINR(trade.entryPrice))}
@@ -466,8 +604,10 @@ export const sendTarget2Hit = async (trade) => {
         </table>
         <p style="color:#22c55e;font-size:14px">🏆 Full target achieved. Consider closing the position.</p>
       `
-      ),
-    }),
+        ),
+      },
+      trade.userId
+    ),
   ]);
   logger.info(`Target 2 alert sent for ${trade.symbol}`);
 };
@@ -501,12 +641,13 @@ export const sendEarningsReminder = async (trade) => {
   ].join('\n');
 
   await Promise.all([
-    sendTelegram(tg),
-    sendEmail({
-      subject: `📅 Earnings Reminder: ${trade.symbol} — consider exit`,
-      html: htmlWrap(
-        `📅 Earnings Exit Reminder — ${trade.symbol}`,
-        `
+    sendTelegram(tg, trade.userId),
+    sendEmail(
+      {
+        subject: `📅 Earnings Reminder: ${trade.symbol} — consider exit`,
+        html: htmlWrap(
+          `📅 Earnings Exit Reminder — ${trade.symbol}`,
+          `
         <table>
           ${row('Symbol', trade.symbol)}
           ${row('Earnings Date', earningsDate ? fmtDate(earningsDate) : 'Approaching')}
@@ -516,8 +657,10 @@ export const sendEarningsReminder = async (trade) => {
         </table>
         <p style="color:#f59e0b;font-size:13px">Consider exiting before earnings to avoid gap risk. Human confirmation required.</p>
       `
-      ),
-    }),
+        ),
+      },
+      trade.userId
+    ),
   ]);
   logger.info(`Earnings reminder sent for ${trade.symbol}`);
 };
@@ -535,23 +678,23 @@ export const sendBearModeAlert = async () => {
     `_Review open positions and tighten stop losses._`,
   ].join('\n');
 
-  await Promise.all([
-    sendTelegram(tg),
-    sendEmail({
-      subject: '🐻 BEAR MODE — All BUY signals blocked',
-      html: htmlWrap(
-        '🐻 Bear Mode Activated',
-        `
-        <p>Nifty 50 has dropped below its 20 EMA. All new BUY signals are blocked until the index recovers.</p>
-        <ul>
-          <li>Review all open positions</li>
-          <li>Consider tightening stop losses</li>
-          <li>No new positions until BULL mode resumes</li>
-        </ul>
-      `
-      ),
-    }),
-  ]);
+  const html = htmlWrap(
+    '🐻 Bear Mode Activated',
+    `
+    <p>Nifty 50 has dropped below its 20 EMA. All new BUY signals are blocked until the index recovers.</p>
+    <ul>
+      <li>Review all open positions</li>
+      <li>Consider tightening stop losses</li>
+      <li>No new positions until BULL mode resumes</li>
+    </ul>
+  `
+  );
+  await fanOut(await allUserIds(), (userId) =>
+    Promise.all([
+      sendTelegram(tg, userId),
+      sendEmail({ subject: '🐻 BEAR MODE — All BUY signals blocked', html }, userId),
+    ])
+  );
   logger.warn('Bear mode alert sent');
 };
 
@@ -569,12 +712,12 @@ export const sendVixSpikeAlert = async (vix) => {
       : 'Elevated volatility — widen stop losses and reduce position sizes.',
   ].join('\n');
 
-  await sendTelegram(tg);
+  await fanOut(await allUserIds(), (userId) => sendTelegram(tg, userId));
   logger.warn(`VIX spike alert sent (${fmt(vix)})`);
 };
 
 // ── 8. Morning brief ──────────────────────────────────────────────────────────
-export const sendMorningBrief = async (data) => {
+export const sendMorningBrief = async (data, userId) => {
   if (!data || Object.keys(data).length === 0) return;
 
   const tg = [
@@ -594,12 +737,13 @@ export const sendMorningBrief = async (data) => {
     .join('\n');
 
   await Promise.all([
-    sendTelegram(tg),
-    sendEmail({
-      subject: `🌅 Morning Brief — ${data.dateStr ?? new Date().toLocaleDateString('en-IN')}`,
-      html: htmlWrap(
-        '🌅 Morning Brief',
-        `
+    sendTelegram(tg, userId),
+    sendEmail(
+      {
+        subject: `🌅 Morning Brief — ${data.dateStr ?? new Date().toLocaleDateString('en-IN')}`,
+        html: htmlWrap(
+          '🌅 Morning Brief',
+          `
         <table>
           ${data.nifty ? row('Nifty 50', `${fmtINR(data.nifty.price)} (${fmtPct(data.nifty.changePct)})`) : ''}
           ${data.vix ? row('India VIX', fmt(data.vix)) : ''}
@@ -608,14 +752,16 @@ export const sendMorningBrief = async (data) => {
           ${data.marketMode ? row('Market Mode', data.marketMode) : ''}
         </table>
       `
-      ),
-    }),
+        ),
+      },
+      userId
+    ),
   ]);
-  logger.info('Morning brief sent');
+  logger.info('Morning brief sent', { userId });
 };
 
 // ── 9. Evening summary ────────────────────────────────────────────────────────
-export const sendEveningSummary = async (data) => {
+export const sendEveningSummary = async (data, userId) => {
   if (!data || Object.keys(data).length === 0) return;
 
   const tg = [
@@ -634,12 +780,13 @@ export const sendEveningSummary = async (data) => {
     .join('\n');
 
   await Promise.all([
-    sendTelegram(tg),
-    sendEmail({
-      subject: `🌆 Evening Summary — ${new Date().toLocaleDateString('en-IN')}`,
-      html: htmlWrap(
-        '🌆 Evening Summary',
-        `
+    sendTelegram(tg, userId),
+    sendEmail(
+      {
+        subject: `🌆 Evening Summary — ${new Date().toLocaleDateString('en-IN')}`,
+        html: htmlWrap(
+          '🌆 Evening Summary',
+          `
         <table>
           ${data.closedTrades != null ? row('Trades Closed', data.closedTrades) : ''}
           ${data.dayPnl != null ? row('Day P&L', `<span class="${data.dayPnl >= 0 ? 'buy' : 'skip'}">${fmtPnl(data.dayPnl)}</span>`) : ''}
@@ -648,10 +795,12 @@ export const sendEveningSummary = async (data) => {
           ${data.openTradesCount != null ? row('Open Positions', data.openTradesCount) : ''}
         </table>
       `
-      ),
-    }),
+        ),
+      },
+      userId
+    ),
   ]);
-  logger.info('Evening summary sent');
+  logger.info('Evening summary sent', { userId });
 };
 
 // ── 9b. Next-session watchlist (EOD prep) ──────────────────────────────────────
@@ -705,17 +854,19 @@ export const sendWatchlistPrep = async (data) => {
     )
     .join('');
 
-  await Promise.all([
-    sendTelegram(tg),
-    sendEmail({
-      subject: `🔭 Next-session watchlist (${list.length}) — ${dateStr}`,
-      html: htmlWrap(
-        '🔭 Next-Session Watchlist',
-        `<p>${list.length} candidates cleared the gates on today's close. Confirm live at the open.</p>
-         <table>${rows}</table>`
-      ),
-    }),
-  ]);
+  const html = htmlWrap(
+    '🔭 Next-Session Watchlist',
+    `<p>${list.length} candidates cleared the gates on today's close. Confirm live at the open.</p>
+     <table>${rows}</table>`
+  );
+  // Shared discovery output (universe-wide, not exclusively any one user's watchlist) —
+  // every registered user gets it.
+  await fanOut(await allUserIds(), (userId) =>
+    Promise.all([
+      sendTelegram(tg, userId),
+      sendEmail({ subject: `🔭 Next-session watchlist (${list.length}) — ${dateStr}`, html }, userId),
+    ])
+  );
   logger.info('Watchlist prep alert sent', { candidates: list.length });
 };
 
@@ -727,9 +878,10 @@ export const sendWatchlistPrep = async (data) => {
  * data" when the sample is too thin to judge.
  *
  * @param {object} report - getDecisionQualityReport() output
+ * @param {string} userId
  * @returns {Promise<void>}
  */
-export const sendDecisionQualityReport = async (report) => {
+export const sendDecisionQualityReport = async (report, userId) => {
   if (!report) return;
   const sc = report.signalCalibration ?? {};
   const tb = report.tradeBased ?? {};
@@ -762,12 +914,13 @@ export const sendDecisionQualityReport = async (report) => {
     .join('\n');
 
   await Promise.all([
-    sendTelegram(tg),
-    sendEmail({
-      subject: '📐 Weekly Calibration Review',
-      html: htmlWrap(
-        '📐 Weekly Calibration Review',
-        `<p><i>${report.verdict?.message ?? 'No verdict.'}</i></p>
+    sendTelegram(tg, userId),
+    sendEmail(
+      {
+        subject: '📐 Weekly Calibration Review',
+        html: htmlWrap(
+          '📐 Weekly Calibration Review',
+          `<p><i>${report.verdict?.message ?? 'No verdict.'}</i></p>
          <table>
            ${row('HIGH confidence', confLine('HIGH'))}
            ${row('MEDIUM confidence', confLine('MEDIUM'))}
@@ -778,8 +931,10 @@ export const sendDecisionQualityReport = async (report) => {
            ${decay.length ? row('Decay flags', decay.map((f) => `${f.key} ${f.winRate}%`).join(', ')) : ''}
          </table>
          <p style="color:#94a3b8;font-size:12px">Hit rates are market-adjusted (excess over Nifty). Trade-based metrics take over as the paper-trade record grows.</p>`
-      ),
-    }),
+        ),
+      },
+      userId
+    ),
   ]);
   logger.info('Decision-quality report sent', {
     resolved: sc.resolved,
@@ -803,10 +958,11 @@ export const clearDedupCache = () => {
  * Reports success/failure directly (does not swallow the send error like alerts do).
  *
  * @param {string} [text] - Custom message; a default test message is used if omitted
+ * @param {string} userId - Whose Config.telegramChatId to use
  * @returns {Promise<{ ok: boolean, chatId?: string, message?: string, reason?: string }>}
  */
-export const sendTestMessage = async (text) => {
-  const cfg = await getCfg();
+export const sendTestMessage = async (text, userId) => {
+  const cfg = await getCfg(userId);
   const bot = getBot();
   const chatId = process.env.TELEGRAM_CHAT_ID || cfg?.telegramChatId;
   const message =
@@ -830,10 +986,11 @@ export const sendTestMessage = async (text) => {
  * Verify Telegram bot token and SMTP credentials without sending any message.
  * Returns a report object — never throws.
  *
+ * @param {string} [userId] - Whose Config to check; env-var fallbacks only when omitted
  * @returns {Promise<{ telegram: { ok: boolean, reason?: string, username?: string }, email: { ok: boolean, reason?: string, to?: string } }>}
  */
-export const testConnections = async () => {
-  const cfg = await getCfg();
+export const testConnections = async (userId) => {
+  const cfg = await getCfg(userId);
   const report = { telegram: null, email: null };
 
   // ── Telegram ───────────────────────────────────────────────────────────────
@@ -882,7 +1039,7 @@ export const testConnections = async () => {
 };
 
 // ── 10. Weekly report ─────────────────────────────────────────────────────────
-export const sendWeeklyReport = async (data) => {
+export const sendWeeklyReport = async (data, userId) => {
   if (!data || Object.keys(data).length === 0) return;
 
   const tg = [
@@ -901,12 +1058,13 @@ export const sendWeeklyReport = async (data) => {
     .join('\n');
 
   await Promise.all([
-    sendTelegram(tg),
-    sendEmail({
-      subject: `📈 Weekly Report — SwingTrader AI`,
-      html: htmlWrap(
-        '📈 Weekly Performance Report',
-        `
+    sendTelegram(tg, userId),
+    sendEmail(
+      {
+        subject: `📈 Weekly Report — SwingTrader AI`,
+        html: htmlWrap(
+          '📈 Weekly Performance Report',
+          `
         <table>
           ${data.totalTrades != null ? row('Total Trades', data.totalTrades) : ''}
           ${data.winRate != null ? row('Win Rate', `${fmt(data.winRate * 100)}%`) : ''}
@@ -917,8 +1075,10 @@ export const sendWeeklyReport = async (data) => {
           ${data.claudeCostInr != null ? row('Claude API Cost', `₹${fmt(data.claudeCostInr, 4)}`) : ''}
         </table>
       `
-      ),
-    }),
+        ),
+      },
+      userId
+    ),
   ]);
-  logger.info('Weekly report sent');
+  logger.info('Weekly report sent', { userId });
 };
