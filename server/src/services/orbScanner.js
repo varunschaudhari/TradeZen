@@ -41,10 +41,12 @@ import {
   VWAP_REVERSION_ENTRY_BAND_MULT,
   VWAP_REVERSION_STOP_BAND_MULT,
   VWAP_REVERSION_TARGET_BUFFER_PCT,
+  INTRADAY_TARGET_COST_SAFETY_MULT,
+  INTRADAY_MIN_RISK_TO_COST_RATIO,
 } from '../config/constants.js';
 import { getIntradayShortlistSymbols } from './intradayUniverse.js';
 import { fetchIntradayBars, fetchIntradaySnapshots } from './pythonBridge.js';
-import { netAfterCosts } from './tradingCosts.js';
+import { netAfterCosts, estimateRoundTripCostPct } from './tradingCosts.js';
 import { getQuotes } from './quoteService.js';
 import { sendOrbAlert, sendOrbSquareOffReminder } from './notifier.js';
 import { emitGlobal, SOCKET_EVENTS } from '../socket/socketHandlers.js';
@@ -314,6 +316,54 @@ export function computePaperPosition(entry, stop) {
   return { shares, capitalDeployed: round2(shares * entry) };
 }
 
+/**
+ * Widens a strategy's proposed target (stop untouched) when its distance from entry
+ * wouldn't clear INTRADAY_TARGET_COST_SAFETY_MULT × the estimated round-trip cost —
+ * otherwise a "target hit" can still net negative after brokerage/STT/slippage (pure).
+ *
+ * @param {number} entry
+ * @param {number} target - Strategy's own computed target
+ * @param {'LONG'|'SHORT'} direction
+ * @param {number} shares - From computePaperPosition, for an accurate cost estimate
+ * @returns {{ target: number, adjusted: boolean }}
+ */
+export function applyTargetCostFloor(entry, target, direction, shares) {
+  const costPct = estimateRoundTripCostPct(entry, shares, 'INTRADAY', direction);
+  const minTargetPct = costPct * INTRADAY_TARGET_COST_SAFETY_MULT;
+  const targetPct = entry > 0 ? (Math.abs(target - entry) / entry) * 100 : 0;
+  if (targetPct >= minTargetPct) return { target, adjusted: false };
+  const widenedDistance = (entry * minTargetPct) / 100;
+  const widened = direction === 'LONG' ? round2(entry + widenedDistance) : round2(entry - widenedDistance);
+  return { target: widened, adjusted: true };
+}
+
+/**
+ * Risk-side cost-geometry floor (pure) — the target floor's complement. A setup whose
+ * stop distance is under INTRADAY_MIN_RISK_TO_COST_RATIO × the round-trip cost% is
+ * structurally unplayable: friction alone drags every trade by 1/ratio R or more, so a
+ * −1R stop-out nets far worse than −1R while a full-target win keeps only scraps
+ * (2026-07-15 session: 0.15% stops → losers −2.6R net, winners +0.5R net). Unlike the
+ * target floor this REJECTS — widening the stop would change the setup's thesis, and
+ * position size cancels out of the ratio entirely, so no sizing can fix it.
+ *
+ * @param {number} entry
+ * @param {number} stop
+ * @param {number} shares - For an accurate cost estimate (brokerage cap)
+ * @param {'LONG'|'SHORT'} direction
+ * @returns {{ pass: boolean, stopDistPct: number, minStopDistPct: number, costPct: number }}
+ */
+export function checkRiskCostFloor(entry, stop, shares, direction) {
+  const costPct = estimateRoundTripCostPct(entry, shares, 'INTRADAY', direction);
+  const stopDistPct = entry > 0 ? (Math.abs(entry - stop) / entry) * 100 : 0;
+  const minStopDistPct = costPct * INTRADAY_MIN_RISK_TO_COST_RATIO;
+  return {
+    pass: stopDistPct >= minStopDistPct && stopDistPct > 0,
+    stopDistPct: round2(stopDistPct * 100) / 100,
+    minStopDistPct: round2(minStopDistPct * 100) / 100,
+    costPct: round2(costPct * 100) / 100,
+  };
+}
+
 /** IST minutes-since-midnight for a bar's ISO open time. */
 function barIstMinutes(isoTime) {
   const ist = new Date(new Date(isoTime).getTime() + 5.5 * 60 * 60 * 1000);
@@ -470,6 +520,32 @@ export const runOrbScan = async ({ forceRun = false } = {}) => {
         const barOpen = snap.lastBarTime ? new Date(snap.lastBarTime) : null;
         const paper = computePaperPosition(snap.lastPrice, stop);
 
+        // Risk-side cost-geometry floor: a stop too tight to carry the round-trip
+        // friction makes every outcome net-negative-biased regardless of win rate —
+        // reject before the target floor bothers widening anything.
+        const geom = checkRiskCostFloor(snap.lastPrice, stop, paper.shares, verdict.direction);
+        if (!geom.pass) {
+          reject('COST_GEOMETRY');
+          logger.info(
+            `${setupType} ${verdict.direction} rejected for ${symbol} — stop too tight to carry costs`,
+            {
+              stopDistPct: geom.stopDistPct,
+              minStopDistPct: geom.minStopDistPct,
+              roundTripCostPct: geom.costPct,
+            }
+          );
+          continue;
+        }
+
+        const { target: finalTarget, adjusted: targetCostAdjusted } =
+          applyTargetCostFloor(snap.lastPrice, target, verdict.direction, paper.shares);
+        if (targetCostAdjusted) {
+          logger.info(`${setupType} ${verdict.direction} target widened for ${symbol} — raw target didn't clear round-trip costs`, {
+            rawTarget: target,
+            widenedTarget: finalTarget,
+          });
+        }
+
         let signal;
         try {
           // The unique {symbol, sessionDate, setupType, direction} index is the atomic
@@ -484,7 +560,8 @@ export const runOrbScan = async ({ forceRun = false } = {}) => {
             vwap: snap.vwap,
             relVolume: snap.relVolume,
             suggestedStop: stop,
-            suggestedTarget: target,
+            suggestedTarget: finalTarget,
+            targetCostAdjusted,
             ...(setupType === 'ORB'
               ? { orHigh: snap.orHigh, orLow: snap.orLow, orWindowMinutes: ORB_WINDOW_MINUTES }
               : {}),
@@ -522,7 +599,7 @@ export const runOrbScan = async ({ forceRun = false } = {}) => {
           vwap: snap.vwap,
           relVolume: snap.relVolume,
           suggestedStop: stop,
-          suggestedTarget: target,
+          suggestedTarget: finalTarget,
           timestamp: now.toISOString(),
         });
         await sendOrbAlert(signal); // notifier never throws

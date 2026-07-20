@@ -91,6 +91,6 @@ export const EXIT_REASONS = Object.freeze({
 });
 
 // Mirror of server/src/config/constants.js trading limits
-export const MAX_OPEN_TRADES          = 15;
+export const MAX_OPEN_TRADES          = 25;
 export const MAX_CAPITAL_DEPLOYED_PCT = 95;
 export const DEFAULT_RISK_PCT         = 0.4;

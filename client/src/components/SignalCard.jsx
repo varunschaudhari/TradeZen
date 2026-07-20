@@ -62,6 +62,10 @@ const SignalCard = ({ signal, quote = null, onPreview = null, accuracy = null, o
   const style      = VERDICT_STYLES[signal.verdict] ?? VERDICT_STYLES.SKIP;
   const isBuy      = signal.verdict === 'BUY';
   const isWait     = signal.verdict === 'WAIT';
+  // A BUY signal covers the whole shared universe the scanner analyzes, not just this
+  // user's watchlist — myActionability (routes/signals.js) reflects whether THIS user
+  // can actually act on it (watchlist membership + their own capacity guards).
+  const notActionable = isBuy && signal.myActionability && signal.myActionability.verdict !== 'BUY';
   const gatesPassed = signal.gatesPassed ?? 0;
   const changeUp   = (quote?.changePct ?? 0) >= 0;
   const rsi        = signal.indicators?.rsi;
@@ -136,6 +140,14 @@ const SignalCard = ({ signal, quote = null, onPreview = null, accuracy = null, o
               S {Math.round(signal.simonsScore)}
             </span>
           )}
+          {notActionable && (
+            <span
+              className="chip bg-slate-700/60 text-slate-400"
+              title={signal.myActionability.waitCondition}
+            >
+              ⏸ Not for you
+            </span>
+          )}
           {onPreview && (
             <button
               onClick={(e) => { e.stopPropagation(); onPreview(signal.symbol); }}
@@ -171,6 +183,14 @@ const SignalCard = ({ signal, quote = null, onPreview = null, accuracy = null, o
             <span>Deploys {formatCurrency(signal.capitalDeployed, 0)}</span>
           </div>
         </div>
+      )}
+
+      {/* Actionability for THIS user — a shared BUY that won't auto-open for you */}
+      {notActionable && (
+        <p className="text-xs text-slate-400 mb-3 pl-1.5">
+          <span className="font-semibold text-wait">Not actionable for you: </span>
+          {signal.myActionability.waitCondition}
+        </p>
       )}
 
       {/* WAIT — show condition only */}
@@ -291,6 +311,10 @@ SignalCard.propTypes = {
     reasoning:      PropTypes.string,
     waitCondition:  PropTypes.string,
     createdAt:      PropTypes.string,
+    myActionability: PropTypes.shape({
+      verdict:       PropTypes.string,
+      waitCondition: PropTypes.string,
+    }),
   }).isRequired,
   quote: PropTypes.shape({
     price:     PropTypes.number,

@@ -25,7 +25,7 @@ const configSchema = new mongoose.Schema(
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true, index: true },
     capital: { type: Number, required: true, default: 1000000 },
     riskPercentage: { type: Number, default: 0.4, min: 0.1, max: 5 },
-    maxOpenTrades: { type: Number, default: 15, min: 1, max: 20 },
+    maxOpenTrades: { type: Number, default: 25, min: 1, max: 30 },
     maxCapitalDeployedPct: { type: Number, default: 95, min: 10, max: 100 },
     watchlist: [watchlistItemSchema],
     telegramChatId: String,

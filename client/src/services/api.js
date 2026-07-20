@@ -70,6 +70,7 @@ export const watchlistApi = {
 
 export const performanceApi = {
   get:          ()            => api.get('/api/performance'),
+  getDaily:     (days = 30)  => api.get('/api/performance/daily', { params: { days } }),
   getHistory:   (limit = 12) => api.get('/api/performance/history', { params: { limit } }),
   getBenchmark: ()            => api.get('/api/performance/benchmark'),
 };

@@ -97,6 +97,24 @@ export function estimateTradeCosts(entry, exit, shares, mode = 'DELIVERY', direc
 }
 
 /**
+ * Round-trip cost as a % of position value, approximated using entry price for both legs
+ * (every rate here is proportional to traded value, so this is accurate to within a few
+ * paise regardless of the actual exit price). Used as a pre-trade viability floor — is a
+ * strategy's proposed target distance even large enough to survive the round trip?
+ *
+ * @param {number} entry
+ * @param {number} shares
+ * @param {'DELIVERY'|'INTRADAY'} [mode='DELIVERY']
+ * @param {'LONG'|'SHORT'} [direction='LONG']
+ * @returns {number} cost as % of entry × shares
+ */
+export function estimateRoundTripCostPct(entry, shares, mode = 'DELIVERY', direction = 'LONG') {
+  if (!(entry > 0) || !(shares > 0)) return 0;
+  const costs = estimateTradeCosts(entry, entry, shares, mode, direction);
+  return (costs.total / (entry * shares)) * 100;
+}
+
+/**
  * Net P&L after estimated costs (pure convenience).
  *
  * @param {number} grossPnl - (exit − entry) × shares for LONG, (entry − exit) × shares for SHORT

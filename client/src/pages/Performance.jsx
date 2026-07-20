@@ -10,6 +10,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { performanceApi, tradesApi } from '../services/api.js';
 import PerformanceChart from '../components/PerformanceChart.jsx';
 import PnlCalendar from '../components/PnlCalendar.jsx';
+import DailyPnlCard from '../components/DailyPnlCard.jsx';
 import StatCard from '../components/StatCard.jsx';
 import { formatCurrency, formatPercent } from '../utils/formatters.js';
 import { downloadCSV } from '../utils/csvExport.js';
@@ -20,17 +21,19 @@ const Performance = () => {
   const [capitalData,   setCapitalData]   = useState([]);
   const [benchmarkData, setBenchmarkData] = useState([]);
   const [closedTrades,  setClosedTrades]  = useState([]);
+  const [dailyPnl,      setDailyPnl]      = useState(null);
   const [loading,       setLoading]       = useState(true);
   const [error,         setError]         = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [perfRes, histRes, tradesRes, bmRes] = await Promise.all([
+      const [perfRes, histRes, tradesRes, bmRes, dailyRes] = await Promise.all([
         performanceApi.get(),
         performanceApi.getHistory(),
         tradesApi.getAll({ status: 'CLOSED' }),
         performanceApi.getBenchmark().catch(() => null),
+        performanceApi.getDaily().catch(() => null),
       ]);
 
       setPerf(perfRes.data);
@@ -41,6 +44,7 @@ const Performance = () => {
       setBenchmarkData(bmRes?.data?.months ?? []);
 
       setClosedTrades((tradesRes.data ?? []).sort((a, b) => new Date(b.exitDate) - new Date(a.exitDate)));
+      setDailyPnl(dailyRes?.data ?? null);
 
       setError(null);
     } catch (err) {
@@ -152,6 +156,9 @@ const Performance = () => {
           />
         </div>
       )}
+
+      {/* Daily P&L — swing vs intraday, net of costs */}
+      <DailyPnlCard report={dailyPnl} />
 
       {/* Charts */}
       <PerformanceChart monthlyData={monthlyData} capitalData={capitalData} benchmarkData={benchmarkData} />

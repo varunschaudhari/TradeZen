@@ -44,6 +44,9 @@ const intradaySignalSchema = new mongoose.Schema(
     relVolume: Number, // time-of-day-adjusted vs prior sessions
     suggestedStop: Number,
     suggestedTarget: Number,
+    // true when the strategy's own target was widened to clear INTRADAY_TARGET_COST_SAFETY_MULT
+    // (round-trip costs would otherwise have eaten most/all of a target-hit win)
+    targetCostAdjusted: { type: Boolean, default: false },
 
     // ORB-only geometry (null for VWAP_REVERSION / MOMENTUM_CONTINUATION)
     orHigh: Number,

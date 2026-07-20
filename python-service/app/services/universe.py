@@ -5,12 +5,21 @@ Description: Static NSE stock universe — index constituent lists for the Step 
              Each symbol carries a tier tag used as a market-cap proxy.
 Author: SwingTrader AI Team
 Created: 2026-06-19
-Last Modified: 2026-06-19
+Last Modified: 2026-07-15
 
 NOTE: These are curated constituent lists. Index membership drifts over time —
 refresh from the official NSE index factsheets periodically. Unknown or delisted
 symbols are handled gracefully by the screener (skipped, logged), so a slightly
 stale list never breaks a scan.
+
+Refreshed 2026-07-15 against NSE's official ind_nifty500list.csv /
+ind_niftymidcap150list.csv: added 254 Nifty500/Midcap150 constituents that were
+missing outright, and fixed 5 tickers stale from real corporate actions —
+TATAMOTORS demerged into TMCV (commercial vehicles) + TMPV (passenger vehicles);
+ZOMATO renamed to ETERNAL; GMRINFRA's airports business now trades as GMRAIRPORT;
+PEL (Piramal Enterprises) split into PIRAMALFIN + PPLPHARMA. GUJGASLTD is absent
+from the current official CSVs (likely dropped from the index in a rebalance, not
+necessarily delisted) and was deliberately left in place rather than removed.
 """
 
 import logging
@@ -30,8 +39,8 @@ NIFTY50: list[str] = [
     "JIOFIN", "JSWSTEEL", "KOTAKBANK", "LT", "M&M",
     "MARUTI", "NESTLEIND", "NTPC", "ONGC", "POWERGRID",
     "RELIANCE", "SBILIFE", "SBIN", "SHRIRAMFIN", "SUNPHARMA",
-    "TATACONSUM", "TATAMOTORS", "TATASTEEL", "TCS", "TECHM",
-    "TITAN", "TRENT", "ULTRACEMCO", "WIPRO",
+    "TATACONSUM", "TMCV", "TMPV", "TATASTEEL", "TCS",
+    "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO",
 ]
 
 NEXT50: list[str] = [
@@ -43,8 +52,8 @@ NEXT50: list[str] = [
     "LICI", "LODHA", "MARICO", "MOTHERSON", "NAUKRI",
     "PIDILITIND", "PFC", "PNB", "RECLTD", "SIEMENS",
     "SRF", "TVSMOTOR", "TORNTPHARM", "VBL", "VEDL",
-    "ZOMATO", "ZYDUSLIFE", "GODREJPROP", "AMBUJACEM", "INDHOTEL",
-    "MAXHEALTH", "MUTHOOTFIN", "POLYCAB", "UNITDSPR", "CGPOWER",
+    "ETERNAL", "ZYDUSLIFE", "GODREJPROP", "INDHOTEL", "MAXHEALTH",
+    "MUTHOOTFIN", "POLYCAB", "UNITDSPR", "CGPOWER",
 ]
 
 MIDCAP150: list[str] = [
@@ -52,7 +61,7 @@ MIDCAP150: list[str] = [
     "ASTRAL", "AUBANK", "AUROPHARMA", "BALKRISIND", "BANDHANBNK",
     "BHARATFORG", "BHEL", "BIOCON", "COFORGE", "CONCOR",
     "COROMANDEL", "CUMMINSIND", "DALBHARAT", "DEEPAKNTR", "DIXON",
-    "ESCORTS", "EXIDEIND", "FEDERALBNK", "GLENMARK", "GMRINFRA",
+    "ESCORTS", "EXIDEIND", "FEDERALBNK", "GLENMARK", "GMRAIRPORT",
     "GODREJIND", "GUJGASLTD", "HINDPETRO", "IDFCFIRSTB", "INDUSTOWER",
     "IPCALAB", "JUBLFOOD", "LTF", "LTTS", "LUPIN",
     "MFSL", "MPHASIS", "MRF", "NMDC", "OBEROIRLTY",
@@ -64,8 +73,59 @@ MIDCAP150: list[str] = [
     "CANFINHOME", "CHAMBLFERT", "CESC", "EMAMILTD", "FORTIS",
     "GODFRYPHLP", "GRANULES", "HONAUT", "IDEA", "INDIAMART",
     "IRCTC", "JKCEMENT", "KPITTECH", "LAURUSLABS", "MANAPPURAM",
-    "MGL", "NATIONALUM", "NAVINFLUOR", "PEL", "POLICYBZR",
-    "RAMCOCEM", "RBLBANK", "SUNDARMFIN", "TRIDENT", "WHIRLPOOL",
+    "MGL", "NATIONALUM", "NAVINFLUOR", "PIRAMALFIN", "PPLPHARMA",
+    "POLICYBZR", "RAMCOCEM", "RBLBANK", "SUNDARMFIN", "TRIDENT",
+    "WHIRLPOOL", "360ONE", "3MINDIA", "AADHARHFC", "ABBOTINDIA",
+    "ABDL", "ABLBL", "ABREL", "ACMESOLAR", "ACUTAAS",
+    "AEGISVOPAK", "AFCONS", "AIAENG", "AIIL", "AJANTPHARM",
+    "ANANDRATHI", "ANANTRAJ", "ANTHEM", "ANURAS", "APOLLOTYRE",
+    "APTUS", "ARE&M", "ASAHIINDIA", "ASTERDM", "ATGL",
+    "ATHERENERG", "ATUL", "AWL", "BAJAJHFL", "BAJAJHLDNG",
+    "BALRAMCHIN", "BANKINDIA", "BAYERCROP", "BBTC", "BDL",
+    "BELRISE", "BEML", "BHARTIHEXA", "BIKAJI", "BLS",
+    "BLUEDART", "BLUEJET", "BRIGADE", "BRITANNIA", "BSOFT",
+    "CAMS", "CANHLIFE", "CAPLIPOINT", "CARBORUNIV", "CARTRADE",
+    "CCL", "CEMPRO", "CENTRALBK", "CGCL", "CHALET",
+    "CHOICEIN", "CHOLAHLDNG", "CIEINDIA", "CLEAN", "COCHINSHIP",
+    "COHANCE", "CONCORDBIO", "CPPLUS", "CRAFTSMAN", "CREDITACC",
+    "CRISIL", "CUB", "DATAPATTNS", "DCMSHRIRAM", "DEEPAKFERT",
+    "DELHIVERY", "DEVYANI", "DMART", "DOMS", "ECLERX",
+    "EIDPARRY", "ELECON", "EMCURE", "EMMVEE", "ENDURANCE",
+    "ENRIN", "ERIS", "FACT", "FINCABLES", "FIRSTCRY",
+    "FIVESTAR", "FLUOROCHEM", "FORCEMOT", "GABRIEL", "GALLANTT",
+    "GICRE", "GILLETTE", "GLAND", "GLAXO", "GMDCLTD",
+    "GODIGIT", "GPIL", "GRAPHITE", "GRAVITA", "GROWW",
+    "GRSE", "GVT&D", "HBLENGINE", "HDBFS", "HDFCAMC",
+    "HEG", "HEXT", "HINDCOPPER", "HINDZINC", "HOMEFIRST",
+    "HONASA", "HSCL", "HUDCO", "HYUNDAI", "ICICIAMC",
+    "IDBI", "IEX", "IFCI", "IGIL", "IGL",
+    "IKS", "INDGN", "INDIACEM", "INDIANB", "INOXWIND",
+    "IOB", "IRB", "IRCON", "IREDA", "ITCHOTELS",
+    "ITI", "J&KBANK", "JAINREC", "JBMA", "JINDALSAW",
+    "JKTYRE", "JPPOWER", "JSL", "JSWCEMENT", "JSWDULUX",
+    "JSWENERGY", "JSWINFRA", "JUBLINGREA", "JUBLPHARMA", "JWL",
+    "JYOTICNC", "KALYANKJIL", "KAYNES", "KEI", "KFINTECH",
+    "KIMS", "KPIL", "KPRMILL", "LALPATHLAB", "LATENTVIEW",
+    "LEMONTREE", "LENSKART", "LGEINDIA", "LICHSGFIN", "LINDEINDIA",
+    "LLOYDSME", "LTFOODS", "LTM", "M&MFIN", "MAHABANK",
+    "MANKIND", "MAPMYINDIA", "MAZDOCK", "MCX", "MEDANTA",
+    "MEESHO", "MINDACORP", "MOTILALOFS", "MRPL", "MSUMI",
+    "NAM-INDIA", "NAVA", "NETWEB", "NEULANDLAB", "NEWGEN",
+    "NHPC", "NIACL", "NIVABUPA", "NLCINDIA", "NSLNISP",
+    "NTPCGREEN", "NUVAMA", "NUVOCO", "NYKAA", "OIL",
+    "OLAELEC", "OLECTRA", "ONESOURCE", "PARADEEP", "PATANJALI",
+    "PAYTM", "PCBL", "PFIZER", "PGEL", "PHOENIXLTD",
+    "PINELABS", "POLYMED", "POONAWALLA", "POWERINDIA", "PREMIERENE",
+    "PTCIL", "PWL", "RAINBOW", "RITES", "RKFORGE",
+    "RPOWER", "RRKABEL", "RVNL", "SAGILITY", "SAILIFE",
+    "SAMMAANCAP", "SAPPHIRE", "SARDAEN", "SAREGAMA", "SBFC",
+    "SBICARD", "SCHNEIDER", "SCI", "SIGNATURE", "SJVN",
+    "SOLARINDS", "SONATSOFTW", "SPLPETRO", "SUZLON", "SWANCORP",
+    "SWIGGY", "TARIL", "TATACAP", "TATACHEM", "TATAINVEST",
+    "TATATECH", "TBOTEK", "TECHNOE", "TEGA", "TENNIND",
+    "THELEELA", "THERMAX", "TIMKEN", "TRAVELFOOD", "UBL",
+    "UNIONBANK", "UNOMINDA", "URBANCO", "VIJAYA", "VMM",
+    "VTL", "WAAREEENER", "WOCKPHARMA", "ZENTEC", "ZYDUSWELL",
 ]
 
 SMALLCAP100: list[str] = [

@@ -19,7 +19,7 @@ const updateSchema = Joi.object({
   // Ceilings mirror the Config Mongoose schema's own bounds (models/Config.js) — Joi was
   // previously stricter than the schema for no reason, silently rejecting values the
   // system itself allows.
-  maxOpenTrades: Joi.number().integer().min(1).max(20).optional(),
+  maxOpenTrades: Joi.number().integer().min(1).max(30).optional(),
   maxCapitalDeployedPct: Joi.number().min(10).max(100).optional(),
   telegramChatId: Joi.string().allow('').optional(),
   emailRecipient: Joi.string().email({ tlds: { allow: false } }).allow('').optional(),

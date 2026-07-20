@@ -74,6 +74,7 @@ const TodaySignals = ({ signals, onViewAll }) => {
           {todayBuys.map((s) => {
             const rr = s.riskReward?.toFixed(1);
             const isCopied = copiedId === s._id;
+            const notActionable = s.myActionability && s.myActionability.verdict !== 'BUY';
             return (
               <div
                 key={s._id}
@@ -93,7 +94,19 @@ const TodaySignals = ({ signals, onViewAll }) => {
                       <span className="chip bg-emerald-500/20 text-emerald-400">HIGH</span>
                     )}
                     <span className="chip bg-slate-700/60 text-slate-400">{s.gatesPassed}/8 gates</span>
+                    {notActionable && (
+                      <span
+                        className="chip bg-slate-700/60 text-slate-400"
+                        title={s.myActionability.waitCondition}
+                      >
+                        ⏸ Not for you
+                      </span>
+                    )}
                   </div>
+
+                  {notActionable && (
+                    <p className="text-[11px] text-slate-500 mt-0.5">{s.myActionability.waitCondition}</p>
+                  )}
 
                   {/* Entry zone + copy button */}
                   <div className="flex items-center gap-3 mt-1 text-[11px] text-slate-400 font-mono">

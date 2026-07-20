@@ -68,10 +68,15 @@ export const SIMONS_OVERRIDE_THRESHOLD = 80; // Simons score ≥ 80 allows soft-
 export const SL_WARNING_PCT = 2;
 
 // Capital protection rules (enforced in code)
-// NOTE: raised to a 15-stock diversified book (was 3 positions / 60% cap / 1% risk).
-// Risk-per-trade dropped to 0.4% so 15 concurrent positions ≈ 6% total portfolio risk if
-// all stop out, and the 95% cap leaves room for ~12–15 modest positions.
-export const MAX_OPEN_TRADES = 15;
+// NOTE: raised to a 25-stock diversified book (was 15 positions / 3 before that / 1%
+// risk originally). At DEFAULT_RISK_PCT=0.4%, 25 concurrent positions ≈ 10% total
+// portfolio risk if every one stops out simultaneously (worst case; positions aren't
+// perfectly correlated in practice) — up from 6% at the 15-slot cap. In practice the
+// 95% capital cap binds first at typical position sizing (~15–16 positions before
+// MAX_CAPITAL_DEPLOYED_PCT is reached, per the ₹61k average deployed/trade observed
+// 2026-07-15) — 25 slots removes the count as the artificial bottleneck and lets
+// capital/sector caps do the real gatekeeping instead.
+export const MAX_OPEN_TRADES = 25;
 export const MAX_CAPITAL_DEPLOYED_PCT = 95;
 export const DEFAULT_RISK_PCT = 0.4;
 export const DAILY_LOSS_PAUSE_PCT = 3;
@@ -311,6 +316,27 @@ export const INTRADAY_UNIVERSE_TIERS = Object.freeze(['NIFTY50', 'NEXT50']);
 export const INTRADAY_MAX_SYMBOLS = 15; // shortlist cap per session, shared by all 3 strategies
 export const INTRADAY_MIN_TURNOVER_INR = 50_000_000; // ₹5 crore/day — stricter than swing's ₹1cr floor
 export const INTRADAY_MIN_ATR_PCT = 1.0; // below this, moves are too small to clear round-trip costs
+
+// Per-signal target viability floor: INTRADAY_MIN_ATR_PCT screens the universe on a
+// symbol's own historical ATR%, but VWAP_REVERSION's target rides that session's live
+// vwapStdDev and MOMENTUM_CONTINUATION's target is a fixed % of price (see below) — either
+// can land under the real round-trip cost (brokerage+STT+exchange+SEBI+stamp+GST+slippage,
+// tradingCosts.js) on a quiet session, turning a strategy "win" into a net loss after
+// costs (observed live: BAJFINANCE/M&M/INDIGO all hit TARGET on 2026-07-14, all net
+// negative). Enforced in orbScanner.js: if the strategy's own target doesn't clear
+// estimated round-trip cost% by this multiple, the target is widened (stop is untouched)
+// before the signal is saved.
+export const INTRADAY_TARGET_COST_SAFETY_MULT = 2.5;
+
+// Risk-side twin of the target floor above: REJECT any setup whose stop distance can't
+// carry the friction. Round-trip cost scales with DEPLOYED value while gross R scales
+// with the stop distance, so a tight stop → big position → cost can exceed 1R itself
+// (observed 2026-07-15: seven ~0.15%-stop setups — every −1R loser netted ≈ −2.6R, and
+// full-target wins netted only ≈ +0.5R; breakeven win rate ≈ 85–90%, unplayable).
+// Requiring stop distance ≥ this multiple of round-trip cost% caps the cost drag at
+// ~1/3 R. Reject, never adjust: widening a stop changes the setup's thesis, and
+// shrinking size doesn't help (cost and gross R shrink together — the ratio is fixed).
+export const INTRADAY_MIN_RISK_TO_COST_RATIO = 3;
 
 // Direction + strategy identifiers, shared across all three setups below.
 export const TRADE_DIRECTIONS = Object.freeze({ LONG: 'LONG', SHORT: 'SHORT' });

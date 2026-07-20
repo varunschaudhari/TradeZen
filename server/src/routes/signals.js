@@ -31,6 +31,12 @@ const VALID_CONFIDENCE = new Set(['HIGH', 'MEDIUM', 'LOW']);
  * Signal doc. Adds `myActionability: { verdict, waitCondition }` to each BUY signal;
  * WAIT/SKIP signals pass through unchanged (capacity guards only ever downgrade a BUY).
  *
+ * Watchlist membership is checked FIRST, same as applyPerUserActioning's own gate —
+ * a BUY signal for a symbol nobody is watching never reaches the capacity guards at
+ * scan time (auto-open never even considers it), so it shouldn't look identically
+ * actionable here either. Without this, a signal for an untracked symbol showed the
+ * same "BUY" the whole feed shares, with no hint it will never auto-open.
+ *
  * @param {object[]} signals - Plain signal objects (already .lean())
  * @param {string} userId
  * @returns {Promise<object[]>}
@@ -42,9 +48,19 @@ async function decorateWithActionability(signals, userId) {
     MarketState.findOne().select('marketMode').lean(),
   ]);
   if (!config) return signals;
+  const watchlistSymbols = new Set((config.watchlist ?? []).map((w) => w.symbol));
   const guards = await resolveGuards(config, marketState?.marketMode ?? null);
   return signals.map((s) => {
     if (s.verdict !== VERDICTS.BUY) return s;
+    if (!watchlistSymbols.has(s.symbol)) {
+      return {
+        ...s,
+        myActionability: {
+          verdict: VERDICTS.WAIT,
+          waitCondition: 'Not on your watchlist — add it to track and auto-open',
+        },
+      };
+    }
     return { ...s, myActionability: effectiveVerdict(s.verdict, s.waitCondition, guards, s.sector ?? null) };
   });
 }

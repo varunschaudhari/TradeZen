@@ -2,6 +2,7 @@
  * @file performance.js
  * @description REST routes for performance statistics
  *   GET /api/performance                  — aggregate summary (win rate, P&L, drawdown, cost)
+ *   GET /api/performance/daily            — daily + overall net P&L, swing vs intraday lanes
  *   GET /api/performance/history          — paginated monthly P&L + capital growth data
  *   GET /api/performance/decision-quality — calibration report (is confidence/score meaningful?)
  * @author SwingTrader AI Team
@@ -14,6 +15,7 @@ import Signal from '../models/Signal.js';
 import Config from '../models/Config.js';
 import { TRADE_STATUSES } from '../config/constants.js';
 import { getDecisionQualityReport } from '../services/decisionQuality.js';
+import { getPnlReport } from '../services/pnlReport.js';
 import { fetchOhlcv } from '../services/pythonBridge.js';
 
 const router = express.Router();
@@ -24,6 +26,19 @@ router.get('/decision-quality', async (req, res, next) => {
   try {
     const report = await getDecisionQualityReport(req.userId);
     res.json({ success: true, data: report, message: 'Decision-quality / calibration report' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/performance/daily?days=30 — per-IST-day net P&L for both lanes (swing =
+// this user's closed trades net of costs; intraday = shared settled paper results)
+// plus overall lifetime totals and a guaranteed `today` row.
+router.get('/daily', async (req, res, next) => {
+  try {
+    const days = Math.min(parseInt(req.query.days ?? '30', 10) || 30, 90);
+    const report = await getPnlReport(req.userId, days);
+    res.json({ success: true, data: report, message: `Daily P&L (${report.days.length} days)` });
   } catch (err) {
     next(err);
   }

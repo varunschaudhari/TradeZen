@@ -14,6 +14,7 @@ import useSocket from '../hooks/useSocket.js';
 import { tradesApi, quotesApi, pricesApi, exportApi, ohlcvApi } from '../services/api.js';
 import { SOCKET_EVENTS, EXIT_REASONS, MAX_OPEN_TRADES } from '../utils/constants.js';
 import { formatCurrency, formatPercent, timeAgo } from '../utils/formatters.js';
+import { useApp } from '../context/AppContext.jsx';
 
 const POLL_MS         = 45_000; // MongoDB position fetch
 const PRICE_REFRESH_MS = 30_000; // live price push during market hours
@@ -125,6 +126,8 @@ const CloseTradeModal = ({ trade, onConfirm, onCancel }) => {
 
 /* ── Positions Page ──────────────────────────────────────────────────────────── */
 const Positions = () => {
+  const { config } = useApp();
+  const maxOpenTrades = config?.maxOpenTrades ?? MAX_OPEN_TRADES;
   const [trades,          setTrades]          = useState([]);
   const [summary,         setSummary]         = useState(null);
   const [updatedAt,       setUpdatedAt]        = useState(null);
@@ -410,7 +413,7 @@ const Positions = () => {
           <h1 className="text-xl font-bold text-slate-100">
             Open Positions
             <span className="ml-2 text-sm font-normal text-slate-500">
-              ({trades.length} / {MAX_OPEN_TRADES} slots)
+              ({trades.length} / {maxOpenTrades} slots)
             </span>
           </h1>
           <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5">

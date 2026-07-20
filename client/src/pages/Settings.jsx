@@ -115,13 +115,13 @@ const Settings = () => {
           />
         </div>
         <div>
-          <label className="text-xs text-slate-400 block mb-1">Max Simultaneous Trades — min 1, max 20</label>
+          <label className="text-xs text-slate-400 block mb-1">Max Simultaneous Trades — min 1, max 30</label>
           <input
             type="number"
             value={config.maxOpenTrades}
             onChange={(e) => update('maxOpenTrades', Number(e.target.value))}
             min={1}
-            max={20}
+            max={30}
             className="bg-surface-elevated border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-full focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
         </div>
