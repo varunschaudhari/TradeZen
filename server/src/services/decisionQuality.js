@@ -26,13 +26,11 @@ import {
   computeTradeMetrics,
   computeSignalAccuracy,
   detectSignalDecay,
-  evaluateGoLive,
 } from './performanceEngine.js';
 import { DEFAULT_CAPITAL } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 
 const round2 = (n) => (n == null ? null : Math.round(n * 100) / 100);
-const MS_PER_WEEK = 7 * 86_400_000;
 const RESOLVE_HORIZON_DAYS = 30; // trading-day window to resolve a signal's directional call
 const MIN_BUCKET = 10; // below this, a bucket's rate is flagged low-confidence
 
@@ -148,13 +146,6 @@ export function calibrationVerdict(byConfidence) {
     : { calibrated: false, message: `Confidence is NOT calibrated: ${desc} — a lower tier outperforms a higher one, so the confidence label is currently noise.` };
 }
 
-/** Weeks of paper history spanned by closed trades (for the go-live gate). */
-function weeksPaper(closed) {
-  const dates = closed.map((t) => new Date(t.entryDate ?? t.createdAt).getTime()).filter(Boolean);
-  if (!dates.length) return 0;
-  return round2((Date.now() - Math.min(...dates)) / MS_PER_WEEK);
-}
-
 /**
  * Build the full decision-quality / calibration report (async DB + price glue).
  *
@@ -180,7 +171,6 @@ export const getDecisionQualityReport = async (userId, opts = {}) => {
   const tradeMetrics = computeTradeMetrics(withSignal, { capitalStart });
   const tradeAccuracy = computeSignalAccuracy(withSignal);
   const decay = detectSignalDecay(withSignal);
-  const goLive = evaluateGoLive(tradeMetrics, { weeksPaper: weeksPaper(closed) });
 
   // ── 2. Signal calibration (self-resolution against forward prices) ──────────
   const signals = await Signal.find({
@@ -234,7 +224,6 @@ export const getDecisionQualityReport = async (userId, opts = {}) => {
       expectancy: tradeMetrics.expectancy,
       byConfidence: tradeAccuracy.byConfidence,
       decayFlags: decay,
-      goLive,
     },
     signalCalibration: {
       signalsConsidered: signals.length,

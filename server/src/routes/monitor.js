@@ -29,6 +29,7 @@ import { runFullScan } from '../scheduler/scanPipeline.js';
 import { fetchUniverse } from '../services/pythonBridge.js';
 import { getScanState, getRecentEvents, emitMonitorEvent } from '../services/scanState.js';
 import { getDecisionQualityReport } from '../services/decisionQuality.js';
+import { evaluateGoLiveGate } from '../services/goLiveGate.js';
 
 const router = express.Router();
 
@@ -282,15 +283,26 @@ function buildSectors(latest, sectorOf) {
 }
 
 // ── Feature 6: Scanner config / schedule ────────────────────────────────────────
-function buildScanner(config, latest, marketMode) {
-  const lastAt = latest ? new Date(latest.createdAt).getTime() : null;
-  const nextAt = lastAt ? lastAt + SCAN_INTERVAL_MIN * 60000 : null;
+// `latest` is the last LIVE ScanResult — but runFullScan() saves one only when
+// health.allowTrading is true (see scanPipeline.js); a BEAR-mode market skips the
+// discovery pipeline entirely and just monitors open positions instead, every cycle,
+// with no new ScanResult. So `latest.createdAt` can be arbitrarily old (days) while
+// the cron itself has been firing correctly the whole time — nextScanAt must always
+// be computed from NOW's next cron tick, never from that potentially-stale timestamp
+// (the old lastAt + interval math silently drifted into the past once scans had been
+// skip-gated for a while, then got shown as a "next ~" countdown, backwards).
+function buildScanner(config, latest, marketState) {
+  const intervalMs = SCAN_INTERVAL_MIN * 60000;
+  const nextAt = Math.ceil(Date.now() / intervalMs) * intervalMs;
+  const health = marketState?.lastMarketHealth ?? null;
+  const allowTrading = health?.allowTrading ?? true;
   return {
     enabled: config?.scannerEnabled ?? false,
     intervalMinutes: SCAN_INTERVAL_MIN,
-    marketMode: marketMode ?? latest?.marketMode ?? null,
+    marketMode: marketState?.marketMode ?? latest?.marketMode ?? null,
     lastScanAt: latest?.createdAt ?? null,
-    nextScanAt: nextAt ? new Date(nextAt).toISOString() : null,
+    nextScanAt: new Date(nextAt).toISOString(),
+    blockedReason: !allowTrading ? (health?.reason ?? 'Market conditions are blocking full scans') : null,
   };
 }
 
@@ -299,7 +311,7 @@ router.get('/overview', async (req, res, next) => {
   try {
     const [config, marketState, latest, history] = await Promise.all([
       Config.findOne({ userId: req.userId }).lean(),
-      MarketState.findOne().select('marketMode').lean(),
+      MarketState.findOne().select('marketMode lastMarketHealth').lean(),
       ScanResult.findOne({ scanType: 'LIVE' }).sort({ createdAt: -1 }).lean(),
       ScanResult.find({ scanType: 'LIVE' })
         .sort({ createdAt: -1 })
@@ -309,7 +321,10 @@ router.get('/overview', async (req, res, next) => {
     ]);
     const sectorOf = buildSectorLookup(config?.watchlist);
 
-    const stats = await buildStats(config, latest, req.userId);
+    const [stats, goLiveGate] = await Promise.all([
+      buildStats(config, latest, req.userId),
+      evaluateGoLiveGate(req.userId).catch(() => null),
+    ]);
 
     res.json({
       success: true,
@@ -319,7 +334,8 @@ router.get('/overview', async (req, res, next) => {
         scoreDistribution: buildScoreDistribution(latest),
         health: buildHealth(history, latest),
         sectors: buildSectors(latest, sectorOf),
-        scanner: buildScanner(config, latest, marketState?.marketMode),
+        scanner: buildScanner(config, latest, marketState),
+        goLiveGate,
         progress: getScanState(),
         events: getRecentEvents(20),
       },

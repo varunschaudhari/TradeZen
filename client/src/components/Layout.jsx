@@ -13,7 +13,6 @@ import { useApp } from '../context/AppContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useNotifications } from '../context/NotificationContext.jsx';
 import NotificationDrawer, { BellIcon } from './NotificationDrawer.jsx';
-import ChatWidget from './ChatWidget.jsx';
 import useServiceHealth from '../hooks/useServiceHealth.js';
 
 /* ── Mobile bottom tab config ───────────────────────────────────────────────── */
@@ -447,9 +446,6 @@ const Layout = ({ children }) => {
           </NavLink>
         ))}
       </nav>
-
-      {/* ── Ask Claude — floating, context-aware, available on every page ──── */}
-      <ChatWidget />
 
       {/* ── Notification drawer ───────────────────────────────────────────── */}
       <NotificationDrawer open={notifOpen} onClose={() => setNotifOpen(false)} />

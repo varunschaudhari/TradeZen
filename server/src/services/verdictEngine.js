@@ -24,8 +24,7 @@
  *   tokensUsed/costInr are always 0 — kept for Signal schema continuity.
  *
  *   Claude still lives elsewhere by design: Haiku headline sentiment (newsFetcher,
- *   feeds gate 8, has a keyword fallback) and the Ask-Claude chat widget. Neither
- *   gates a verdict.
+ *   feeds gate 8, has a keyword fallback). Doesn't gate a verdict.
  *
  * @author TradeZen Team
  * @created 2026-07-13

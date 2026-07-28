@@ -251,7 +251,7 @@ const Positions = () => {
       setTrades((prev) => prev.filter((t) => t._id !== _id));
       setSlWarnings((prev) => { const s = new Set(prev); s.delete(String(_id)); return s; });
       const pnlStr = realizedPnl != null ? ` · ${realizedPnl >= 0 ? '+' : ''}₹${Math.round(realizedPnl).toLocaleString('en-IN')}` : '';
-      const reasonLabels = { STOPLOSS: 'SL hit', TARGET2: 'T2 hit', MANUAL: 'Closed', TARGET1: 'T1 booked', EARNINGS: 'Earnings exit' };
+      const reasonLabels = { STOPLOSS: 'SL hit', TARGET2: 'T2 hit', MANUAL: 'Closed', TARGET1: 'T1 booked', EARNINGS: 'Earnings exit', TIME_EXIT: 'Time exit (21d)' };
       const label = reasonLabels[exitReason] ?? exitReason;
       if (exitReason === 'STOPLOSS') {
         toast.error(`${label}: ${symbol}${pnlStr}`);

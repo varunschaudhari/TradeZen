@@ -17,6 +17,7 @@ const EXIT_LABELS = {
   STOPLOSS: 'SL hit',
   MANUAL: 'Manual',
   EARNINGS: 'Earnings',
+  TIME_EXIT: 'Time exit (21d)',
 };
 
 const TradeLedger = () => {

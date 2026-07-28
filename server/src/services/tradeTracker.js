@@ -475,7 +475,7 @@ async function processTrade(trade, price, summary) {
   // close at the current price so the paper record resolves (feeds calibration).
   if (trade.source === 'AUTO' && isPastMaxHold(trade)) {
     trade.notes = `${trade.notes ?? ''} | closed: max-hold (${MAX_PAPER_HOLD_DAYS}d) time exit`.trim();
-    await closeTrade(trade, { exitPrice: price, exitReason: EXIT_REASONS.MANUAL });
+    await closeTrade(trade, { exitPrice: price, exitReason: EXIT_REASONS.TIME_EXIT });
     summary.timeExit = (summary.timeExit ?? 0) + 1;
     return;
   }

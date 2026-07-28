@@ -88,6 +88,7 @@ export const EXIT_REASONS = Object.freeze({
   STOPLOSS: 'STOPLOSS',
   MANUAL: 'MANUAL',
   EARNINGS: 'EARNINGS',
+  TIME_EXIT: 'TIME_EXIT',
 });
 
 // Mirror of server/src/config/constants.js trading limits

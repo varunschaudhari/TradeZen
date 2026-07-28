@@ -10,11 +10,11 @@ import toast from 'react-hot-toast';
 import useSocket from '../hooks/useSocket.js';
 import useCountUp from '../hooks/useCountUp.js';
 import ContextMenu from './ContextMenu.jsx';
-import { tradesApi, performanceApi, quotesApi, pricesApi } from '../services/api.js';
-import { SOCKET_EVENTS, EXIT_REASONS } from '../utils/constants.js';
+import { useApp } from '../context/AppContext.jsx';
+import { tradesApi, performanceApi, quotesApi, pricesApi, intradayApi } from '../services/api.js';
+import { SOCKET_EVENTS, EXIT_REASONS, MAX_OPEN_TRADES } from '../utils/constants.js';
 import { formatCurrency, formatPercent, timeAgo } from '../utils/formatters.js';
 
-const MAX_SLOTS        = 15;
 const POLL_MS          = 45_000;
 const PRICE_REFRESH_MS = 30_000;
 
@@ -148,7 +148,7 @@ const RiskOmeter = ({ positions, capital }) => {
 /* ══════════════════════════════════════════════════════════════════
    Portfolio Heat Map — 15-slot grid, colored by unrealized P&L %
 ═══════════════════════════════════════════════════════════════════ */
-const HeatMap = ({ positions }) => {
+const HeatMap = ({ positions, maxSlots }) => {
   const cellStyle = (p) => {
     if (!p) return 'border-dashed border-slate-700/40 bg-slate-800/20 text-slate-700 cursor-default';
     const pct = p.unrealizedPnlPct ?? 0;
@@ -159,13 +159,13 @@ const HeatMap = ({ positions }) => {
     return                  'border-red-500/50 bg-red-500/25 text-red-300 cursor-pointer hover:bg-red-500/35';
   };
 
-  const slots = Array.from({ length: MAX_SLOTS }, (_, i) => positions[i] ?? null);
+  const slots = Array.from({ length: maxSlots }, (_, i) => positions[i] ?? null);
 
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
         <p className="text-[10px] uppercase tracking-widest text-slate-500">Portfolio Heat Map</p>
-        <p className="text-[10px] text-slate-600">{positions.length} / {MAX_SLOTS} slots filled</p>
+        <p className="text-[10px] text-slate-600">{positions.length} / {maxSlots} slots filled</p>
       </div>
       <div className="stagger-grid grid grid-cols-5 gap-1.5">
         {slots.map((p, i) => (
@@ -191,6 +191,7 @@ const HeatMap = ({ positions }) => {
     </div>
   );
 };
+HeatMap.propTypes = { positions: PropTypes.array.isRequired, maxSlots: PropTypes.number.isRequired };
 
 /* ══════════════════════════════════════════════════════════════════
    SL → Entry → T1 → T2 Progress Bar
@@ -288,9 +289,12 @@ const positionStatus = (p) => {
 const PortfolioPanel = ({ perf }) => {
   const navigate = useNavigate();
   const { subscribe } = useSocket();
+  const { config } = useApp();
+  const maxSlots = config?.maxOpenTrades ?? MAX_OPEN_TRADES;
   const [positions, setPositions] = useState([]);
   const [summary,   setSummary]   = useState(null);
   const [equity,    setEquity]    = useState([]);
+  const [goLiveGate, setGoLiveGate] = useState(null);
 
   const positionsRef = useRef([]);
   useEffect(() => { positionsRef.current = positions; }, [positions]);
@@ -335,6 +339,12 @@ const PortfolioPanel = ({ perf }) => {
     }).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    intradayApi.getGoLive().then((r) => {
+      setGoLiveGate((r?.data ?? r)?.swing ?? null);
+    }).catch(() => {});
+  }, []);
+
   /* Derived numbers */
   const capital    = perf?.capital ?? 0;
   const deployed   = summary?.totalDeployed  ?? 0;
@@ -350,11 +360,11 @@ const PortfolioPanel = ({ perf }) => {
   const animatedUnrealized = useCountUp(unrealized);
   const animatedRealized   = useCountUp(realized);
 
-  /* Go-live readiness: ≥20 closed, win rate ≥50%, positive realized */
-  const ready  = closed >= 20 && (perf?.winRate ?? 0) >= 50 && realized > 0;
-  const goLive = ready
-    ? { text: '✅ go-live ready',  cls: 'bg-emerald-500/15 text-emerald-400' }
-    : { text: `⏳ ${closed}/20 trades`, cls: 'bg-amber-500/15 text-amber-400' };
+  /* Go-live readiness — the real evidence gate (goLiveGate.js: sample≥30, span≥42d,
+     expectancy>0, profit factor≥1.3, drawdown≤10%), not a quick approximation. */
+  const goLive = goLiveGate?.pass
+    ? { text: '✅ go-live ready', cls: 'bg-emerald-500/15 text-emerald-400' }
+    : { text: `⏳ ${goLiveGate?.stats?.sample ?? closed}/30 trades`, cls: 'bg-amber-500/15 text-amber-400' };
 
   /* Sort worst → best P&L (attention-first order) */
   const sorted = [...positions].sort((a, b) => (a.unrealizedPnlPct ?? 0) - (b.unrealizedPnlPct ?? 0));
@@ -420,7 +430,7 @@ const PortfolioPanel = ({ perf }) => {
             <p className="text-[9px] uppercase tracking-widest text-slate-600">Open Slots</p>
             <p className="text-2xl font-mono font-extrabold text-slate-100 tabular-nums mt-0.5">
               {open}
-              <span className="text-slate-500 text-base font-normal"> / {MAX_SLOTS}</span>
+              <span className="text-slate-500 text-base font-normal"> / {maxSlots}</span>
             </p>
           </div>
           <div>
@@ -451,7 +461,7 @@ const PortfolioPanel = ({ perf }) => {
 
       {/* ── Row 2: Heat map ──────────────────────────────────────────── */}
       <div className="card">
-        <HeatMap positions={sorted} />
+        <HeatMap positions={sorted} maxSlots={maxSlots} />
       </div>
 
       {/* ── Row 3: Positions book with progress bars ─────────────────── */}

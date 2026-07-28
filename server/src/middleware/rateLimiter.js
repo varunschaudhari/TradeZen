@@ -1,6 +1,6 @@
 /**
  * @file rateLimiter.js
- * @description Express rate limiting — global limiter + stricter limits for AI endpoints
+ * @description Express rate limiting — global backstop limiter
  * @author SwingTrader AI Team
  * @created 2026-06-13
  * @lastModified 2026-06-13
@@ -17,10 +17,4 @@ export const globalRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, error: 'Too many requests, please try again later', code: 429 },
-});
-
-export const claudeRateLimiter = rateLimit({
-  windowMs: 60000,
-  max: 10,
-  message: { success: false, error: 'Claude chat rate limit exceeded', code: 429 },
 });

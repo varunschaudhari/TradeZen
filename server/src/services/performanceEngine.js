@@ -2,10 +2,14 @@
  * @file performanceEngine.js
  * @description Flow 10 — performance metrics: win rate, avg R:R, expectancy, drawdown,
  *              monthly P&L, and per-setup/confidence/Simons/sector signal accuracy, plus
- *              Simons-style signal-decay detection and a go-live readiness helper.
+ *              Simons-style signal-decay detection.
  *              Pure calculators (computeTradeMetrics, computeSignalAccuracy,
- *              detectSignalDecay, evaluateGoLive) are unit-tested; updatePerformance /
+ *              detectSignalDecay) are unit-tested; updatePerformance /
  *              getPerformanceSummary are thin DB glue over those cores.
+ *              Go-live readiness lives in goLiveGate.js — the evidence-based gate
+ *              (sample size, span, profit factor, drawdown), not this file (a lighter
+ *              win-rate/weeks check used to live here too; removed 2026-07-28 since it
+ *              gave a contradictory, more lenient "ready" verdict than the real gate).
  * @author TradeZen Team
  * @created 2026-06-20
  * @lastModified 2026-06-20
@@ -17,8 +21,6 @@ import Performance from '../models/Performance.js';
 import Config from '../models/Config.js';
 import {
   DEFAULT_CAPITAL,
-  GO_LIVE_MIN_WEEKS,
-  GO_LIVE_MIN_WINRATE,
   SIGNAL_DECAY_MIN_SAMPLES,
   SIGNAL_DECAY_WINRATE,
 } from '../config/constants.js';
@@ -224,24 +226,6 @@ export const detectSignalDecay = (trades, opts = {}) => {
     }
   }
   return flags;
-};
-
-/**
- * Go-live readiness: paper win rate ≥ threshold over ≥ N weeks with positive expectancy.
- *
- * @param {object} metrics - Output of computeTradeMetrics
- * @param {object} [opts] - { weeksPaper, minWinRate (0–1), minWeeks }
- * @returns {{ ready: boolean, winRate: number, expectancy: number, weeksPaper: number, message: string }}
- */
-export const evaluateGoLive = (metrics, opts = {}) => {
-  const minWinRate = (opts.minWinRate ?? GO_LIVE_MIN_WINRATE) * 100;
-  const minWeeks = opts.minWeeks ?? GO_LIVE_MIN_WEEKS;
-  const weeksPaper = opts.weeksPaper ?? 0;
-  const ready = weeksPaper >= minWeeks && metrics.winRate >= minWinRate && metrics.expectancy > 0;
-  const message = ready
-    ? `Paper win rate ${metrics.winRate}% over ${weeksPaper}w with positive expectancy (₹${metrics.expectancy}/trade) — system ready for live trading.`
-    : `Not ready: win rate ${metrics.winRate}% (need ≥${minWinRate}%), expectancy ₹${metrics.expectancy}, ${weeksPaper}/${minWeeks} weeks paper. Review signals before going live.`;
-  return { ready, winRate: metrics.winRate, expectancy: metrics.expectancy, weeksPaper, message };
 };
 
 // ── Async DB glue ────────────────────────────────────────────────────────────────

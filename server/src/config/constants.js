@@ -101,8 +101,8 @@ export const DEPLOYMENT_CAP_BY_MODE = Object.freeze({
 // Claude API cost control
 // (Retired 2026-07-13: CLAUDE_MAX_TOKENS / DAILY_CLAUDE_COST_ALERT_INR /
 // CLAUDE_TEMPERATURE / CLAUDE_RATE_LIMIT_WAIT_MS — the Claude verdict engine was
-// replaced by the deterministic verdictEngine.js. Claude remains only in Haiku
-// headline sentiment (newsFetcher) and the Ask-Claude chat route.)
+// replaced by the deterministic verdictEngine.js. The Ask-Claude chat widget was
+// removed 2026-07-20. Claude remains only in Haiku headline sentiment (newsFetcher).)
 export const SETUP_TYPES = Object.freeze([
   'MOMENTUM_BREAKOUT',
   'PULLBACK_TO_SUPPORT',
@@ -453,8 +453,8 @@ export const MAX_PAPER_HOLD_DAYS = 21;
 export const DEFAULT_CAPITAL = 1_000_000; // ₹10 lakh baseline
 export const SIGNAL_DECAY_WINRATE = 0.48; // flag a setup/signal below 48% win rate
 export const SIGNAL_DECAY_MIN_SAMPLES = 5; // minimum trades before decay is meaningful
-export const GO_LIVE_MIN_WINRATE = 0.5; // paper win rate needed before going live
-export const GO_LIVE_MIN_WEEKS = 3; // minimum paper-trading weeks before go-live
+// Go-live readiness thresholds live in goLiveGate.js's GATE_THRESHOLDS (sample size,
+// span, profit factor, drawdown) — the real evidence-based gate, not these.
 
 // Enums
 export const MARKET_MODES = Object.freeze({
@@ -472,6 +472,7 @@ export const EXIT_REASONS = Object.freeze({
   STOPLOSS: 'STOPLOSS',
   MANUAL: 'MANUAL',
   EARNINGS: 'EARNINGS',
+  TIME_EXIT: 'TIME_EXIT', // MAX_PAPER_HOLD_DAYS backstop closed it, not the user
 });
 export const SENTIMENTS = Object.freeze({
   POSITIVE: 'POSITIVE',

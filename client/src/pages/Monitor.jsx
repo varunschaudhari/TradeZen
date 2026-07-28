@@ -502,7 +502,7 @@ const BucketTable = ({ title, buckets }) => {
 };
 BucketTable.propTypes = { title: PropTypes.string, buckets: PropTypes.object };
 
-const CalibrationPanel = ({ calibration, loading, onRefresh }) => {
+const CalibrationPanel = ({ calibration, loading, onRefresh, goLiveGate }) => {
   const refreshBtn = (
     <button onClick={onRefresh} disabled={loading} className="btn-ghost text-[11px] px-2 py-1 disabled:opacity-50">
       {loading ? 'Computing…' : 'Recompute'}
@@ -555,10 +555,16 @@ const CalibrationPanel = ({ calibration, loading, onRefresh }) => {
           <BucketTable title="Hit rate by score band" buckets={sc.byScore} />
         </div>
 
-        {/* Go-live gate */}
-        {tb.goLive && (
-          <div className={`rounded p-2 text-xs ${tb.goLive.ready ? 'bg-bull/10 border border-bull/30 text-bull' : 'bg-slate-800/40 border border-slate-700 text-slate-400'}`}>
-            <span className="font-semibold">{tb.goLive.ready ? '✅ Go-live ready' : '⏳ Not go-live ready'}</span> — {tb.goLive.message}
+        {/* Go-live gate — the real evidence-based gate (goLiveGate.js), not a vibe check.
+            Every check (sample≥30, span≥42d, expectancy>0, profit factor≥1.3, drawdown≤10%)
+            must pass; see /go-live for the full breakdown. */}
+        {goLiveGate && (
+          <div className={`rounded p-2 text-xs ${goLiveGate.pass ? 'bg-bull/10 border border-bull/30 text-bull' : 'bg-slate-800/40 border border-slate-700 text-slate-400'}`}>
+            <span className="font-semibold">{goLiveGate.pass ? '✅ Go-live ready' : '⏳ Not go-live ready'}</span>
+            {' — '}
+            {goLiveGate.stats.sample}/30 settled · {goLiveGate.stats.spanDays}/42d span · profit factor{' '}
+            {goLiveGate.stats.profitFactor === Infinity ? '∞' : goLiveGate.stats.profitFactor ?? '—'} (need ≥1.3)
+            {' · '}<Link to="/go-live-evidence" className="underline hover:text-slate-200">full breakdown</Link>
           </div>
         )}
 
@@ -571,7 +577,15 @@ const CalibrationPanel = ({ calibration, loading, onRefresh }) => {
     </Card>
   );
 };
-CalibrationPanel.propTypes = { calibration: PropTypes.object, loading: PropTypes.bool, onRefresh: PropTypes.func };
+CalibrationPanel.propTypes = {
+  calibration: PropTypes.object,
+  loading: PropTypes.bool,
+  onRefresh: PropTypes.func,
+  goLiveGate: PropTypes.shape({
+    pass: PropTypes.bool,
+    stats: PropTypes.object,
+  }),
+};
 
 /* ── Page ─────────────────────────────────────────────────────────────────────── */
 const Monitor = () => {
@@ -661,9 +675,13 @@ const Monitor = () => {
         <div>
           <h1 className="text-xl font-bold text-slate-100">Scan Monitor</h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            {scanner?.lastScanAt ? `Last scan ${timeAgo(scanner.lastScanAt)}` : 'No scans yet'}
-            {scanner?.intervalMinutes ? ` · auto every ${scanner.intervalMinutes}m` : ''}
-            {scanner?.nextScanAt && scanner?.enabled ? ` · next ~${timeAgo(scanner.nextScanAt).replace(' ago', '')}` : ''}
+            {scanner?.lastScanAt ? `Last full scan ${timeAgo(scanner.lastScanAt)}` : 'No scans yet'}
+            {scanner?.intervalMinutes ? ` · checks every ${scanner.intervalMinutes}m` : ''}
+            {scanner?.enabled && (
+              scanner?.blockedReason
+                ? <span className="text-wait"> · paused: {scanner.blockedReason}</span>
+                : ` · next ~${timeAgo(scanner.nextScanAt).replace(' ago', '')}`
+            )}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -727,7 +745,7 @@ const Monitor = () => {
           </div>
 
           {/* Decision calibration — is the score/confidence predictive? */}
-          <CalibrationPanel calibration={calibration} loading={calLoading} onRefresh={loadCalibration} />
+          <CalibrationPanel calibration={calibration} loading={calLoading} onRefresh={loadCalibration} goLiveGate={overview?.goLiveGate?.swing} />
 
           {/* Sector status (Feature 8) */}
           <SectorStatus sectors={overview?.sectors} />

@@ -135,7 +135,6 @@ This system **never** places trades automatically. All signals require human con
 | GET | /api/watchlist | Current watchlist |
 | POST | /api/watchlist | Add stock |
 | GET | /api/market | Nifty, VIX, market mode |
-| POST | /api/chat | Ask Claude anything |
 
 ## Development Commands
 

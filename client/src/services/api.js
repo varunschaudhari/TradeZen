@@ -147,10 +147,6 @@ export const newsApi = {
   getBySymbol: (symbol) => api.get(`/api/news/${symbol}`),
 };
 
-export const chatApi = {
-  ask: (message, context) => api.post('/api/chat', { message, context }),
-};
-
 export const configApi = {
   get: () => api.get('/api/config'),
   update: (data) => api.patch('/api/config', data),

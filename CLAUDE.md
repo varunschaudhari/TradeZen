@@ -1,6 +1,6 @@
 # SwingTrader AI — CLAUDE.md
 
-Quantitative NSE swing trading signal platform. MERN stack + Python FastAPI + a deterministic verdict engine (Claude is advisory-only: Haiku news sentiment + chat widget).
+Quantitative NSE swing trading signal platform. MERN stack + Python FastAPI + a deterministic verdict engine (Claude is advisory-only: Haiku news sentiment only, no user-facing chat).
 **Never places trades. Never auto-executes orders. Sends alerts and tracks positions only.**
 
 ---
@@ -62,9 +62,10 @@ BEAR mode blocks BUY, T1_MIN_R geometry floor unchanged) because the LLM gate wa
 unvalidated filter in the system, non-reproducible in backtests, and it starved the go-live
 evidence pipeline of BUY signals. Claude-judged signals created before this date remain in
 the DB for before/after calibration comparison; `dataCollectionStartedAt` was reset at
-cutover so the go-live gate judges only the new engine's record. Claude remains ONLY in:
-Haiku headline sentiment (`newsFetcher.js`, feeds gate 8, has a keyword fallback) and the
-Ask-Claude chat widget (`routes/chat.js`).
+cutover so the go-live gate judges only the new engine's record. Claude remains ONLY in
+Haiku headline sentiment (`newsFetcher.js`, feeds gate 8, has a keyword fallback). The
+Ask-Claude chat widget (`routes/chat.js`, `ChatWidget.jsx`) was removed 2026-07-20 —
+no more direct user-facing Claude access anywhere in the app.
 
 ---
 
@@ -97,13 +98,14 @@ These are not configuration options — they are hard-coded requirements that mu
 ## Claude usage (post-2026-07-13: advisory only, never a gate)
 
 The verdict pipeline makes **zero** Claude calls — `verdictEngine.js` is pure and free.
-Claude remains in exactly two places, neither of which gates a verdict:
+Claude remains in exactly one place, which never gates a verdict:
 
 - **Headline sentiment** (`newsFetcher.js`): Haiku (`CLAUDE_SENTIMENT_MODEL`, default
   `claude-haiku-4-5`) scores headlines for gate 8; falls back to keyword scoring
   automatically on any API failure. Cached 6h per symbol.
-- **Ask-Claude chat** (`routes/chat.js`): the floating chat widget, 10 req/min
-  rate-limited (`claudeRateLimiter`).
+
+(The Ask-Claude chat widget — `routes/chat.js`, `ChatWidget.jsx` — was removed
+2026-07-20. `ANTHROPIC_API_KEY` is still required, solely for the sentiment call above.)
 
 `Signal.claudeCostInr` / `claudeTokensUsed` are 0 on all new signals (fields kept for
 historical continuity — pre-cutover signals carry real costs).
@@ -174,7 +176,6 @@ swing-trader/
 │   │   │   ├── MarketStatusBar.jsx  Nifty/VIX/A:D live strip
 │   │   │   ├── PerformanceChart.jsx  Monthly P&L + capital growth
 │   │   │   ├── CandlestickChart.jsx  TradingView lightweight-charts
-│   │   │   ├── ChatWidget.jsx  Ask Claude floating panel
 │   │   │   └── NewsWidget.jsx  Sentiment + headlines
 │   │   ├── pages/
 │   │   │   ├── Dashboard.jsx   Signal grid + chart on click
@@ -218,7 +219,6 @@ swing-trader/
 │   │   │   ├── watchlist.js    GET, POST, DELETE /:symbol
 │   │   │   ├── performance.js  GET /, GET /history
 │   │   │   ├── news.js         GET /:symbol (validates /^[A-Z]{1,20}$/)
-│   │   │   ├── chat.js         POST / (Claude chat, 10/min rate limit)
 │   │   │   ├── prices.js       POST /update (SL warning check)
 │   │   │   ├── config.js       GET /, PATCH /
 │   │   │   ├── ohlcv.js        GET /:symbol?period=&interval=
@@ -238,7 +238,7 @@ swing-trader/
 │   │   │   └── socketHandlers.js SOCKET_EVENTS frozen object + emitEvent()
 │   │   └── middleware/
 │   │       ├── errorHandler.js  Global error handler
-│   │       ├── rateLimiter.js   globalRateLimiter + claudeRateLimiter (10/min)
+│   │       ├── rateLimiter.js   globalRateLimiter (backstop)
 │   │       └── validateRequest.js  Joi wrapper → 400 on invalid body
 │   ├── scripts/
 │   │   └── seed.js             One-time DB seed (Config + starter watchlist)
@@ -259,7 +259,7 @@ swing-trader/
 │
 ├── docker-compose.yml          4 services: mongo, python-service, server, client
 ├── test-integration.mjs        Step 10 automated integration test (32 checks)
-├── SwingTrader-AI.postman_collection.json  47 requests, 12 folders
+├── SwingTrader-AI.postman_collection.json  44 requests, 11 folders
 └── CLAUDE.md                   This file
 ```
 

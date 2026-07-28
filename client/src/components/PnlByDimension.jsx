@@ -13,6 +13,7 @@ import { formatCurrency } from '../utils/formatters.js';
 
 const EXIT_REASON_LABELS = {
   TARGET1: 'Target 1', TARGET2: 'Target 2', STOPLOSS: 'Stop Loss', MANUAL: 'Manual', EARNINGS: 'Earnings',
+  TIME_EXIT: 'Time Exit (21d)',
 };
 
 const DIMENSIONS = [
