@@ -360,7 +360,17 @@ export const VWAP_REVERSION_TARGET_BUFFER_PCT = 0.1; // target sits just short o
 export const MOMENTUM_EMA_PERIOD = 9; // must match EMA_PERIOD in python-service/intraday.py
 export const MOMENTUM_MIN_TREND_PCT = 0.3; // min |price − ema9| / ema9 to call it "trending", not chop
 export const MOMENTUM_PULLBACK_MAX_PCT = 0.5; // pullback bar must stay within this % of ema9
-export const MOMENTUM_STOP_BUFFER_PCT = 0.15; // stop beyond the pullback bar's extreme
+export const MOMENTUM_STOP_BUFFER_PCT = 0.15; // floor only now — see MOMENTUM_STOP_VOL_MULT
+// Stop scales with the session's own realized volatility (day range so far ÷ bars
+// elapsed, as % of price) instead of the flat MOMENTUM_STOP_BUFFER_PCT alone — a flat
+// 0.15% stopped out ~77% of trades regardless of entry quality (backtest, 22 trades,
+// 2026-07-09→07-15: win rate 22.7%, net -₹6,799). ×3 recovered win rate to ~36% and
+// net to -₹2,775 in the same sample (still net-negative, but a real improvement — see
+// MOMENTUM_STOP_BUFFER_PCT's new role as a floor so the stop never gets tighter than
+// before, only wider when volatility warrants it). Idea adapted from Bhandari &
+// Chakravorty (2019) "An Intraday Trend-Following Trading Strategy on Equity
+// Derivatives in India" — historical-volatility-based stop vs. a flat distance.
+export const MOMENTUM_STOP_VOL_MULT = 3;
 export const MOMENTUM_TARGET_R_MULT = 1.8; // target = entry ± this × (entry − stop)
 
 // Discipline ledger (disciplineLedger.js) — records every trade the system blocked and

@@ -27,6 +27,7 @@ import {
   MOMENTUM_MIN_TREND_PCT,
   MOMENTUM_PULLBACK_MAX_PCT,
   MOMENTUM_STOP_BUFFER_PCT,
+  MOMENTUM_STOP_VOL_MULT,
   MOMENTUM_TARGET_R_MULT,
   ORB_BREAKOUT_BUFFER_PCT,
   ORB_PAPER_CAPITAL,
@@ -278,11 +279,20 @@ export function evaluateMomentumSetup(snap) {
   };
 }
 
-/** Momentum-continuation stop/target (pure). No natural measured-move, so target is
- * R-based off the pullback stop distance. */
+/** Momentum-continuation stop/target (pure). Stop scales with the session's own
+ * realized volatility — day range so far ÷ bars elapsed, as % of price — rather than a
+ * flat percentage; MOMENTUM_STOP_BUFFER_PCT is a floor, not the primary sizing, so the
+ * stop only ever gets wider than that floor, never tighter (see MOMENTUM_STOP_VOL_MULT
+ * for the backtest this was validated against). No natural measured-move for the
+ * target, so it stays R-based off whatever the stop distance comes out to. */
 export function momentumLevels(snap, direction) {
-  const { lastPrice } = snap;
-  const buffer = (lastPrice * MOMENTUM_STOP_BUFFER_PCT) / 100;
+  const { lastPrice, dayHigh, dayLow, barsCount } = snap;
+  const avgBarRangePct =
+    barsCount > 0 && dayHigh != null && dayLow != null
+      ? ((dayHigh - dayLow) / barsCount / lastPrice) * 100
+      : 0;
+  const stopPct = Math.max(MOMENTUM_STOP_VOL_MULT * avgBarRangePct, MOMENTUM_STOP_BUFFER_PCT);
+  const buffer = (lastPrice * stopPct) / 100;
   const stop = direction === 'LONG' ? round2(lastPrice - buffer) : round2(lastPrice + buffer);
   const risk = Math.abs(lastPrice - stop);
   const target =
