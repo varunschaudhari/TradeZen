@@ -18,10 +18,8 @@ import Stock from '../models/Stock.js';
 import Config from '../models/Config.js';
 import { validateBody } from '../middleware/validateRequest.js';
 import { netAfterCosts } from '../services/tradingCosts.js';
-import { computeCloseFields } from '../services/tradeTracker.js';
-import { sendTarget1Hit, sendTarget2Hit } from '../services/notifier.js';
+import { closeTrade, markTarget1Hit } from '../services/tradeTracker.js';
 import { getLivePositions, refreshOpenPositions } from '../services/positionTracker.js';
-import { emitToUser, SOCKET_EVENTS } from '../socket/socketHandlers.js';
 import {
   TRADE_STATUSES,
   EXIT_REASONS,
@@ -393,20 +391,17 @@ router.patch('/:id/target1', async (req, res, next) => {
       return res.status(400).json({ success: false, error: 'Target 1 already marked', code: 400 });
     }
 
-    trade.target1Hit = true;
-    trade.target1HitDate = new Date();
-    trade.target1ExitPrice = trade.currentPrice ?? trade.target1; // best available fill price
-    if (!trade.slTrailed) {
-      trade.slTrailed = true;
-      trade.slTrailedTo = trade.entryPrice; // break-even — consistent with monitor path
-      trade.stopLoss = trade.entryPrice;
+    // Shares the same atomic, guarded findOneAndUpdate as the automated monitor —
+    // this manual route used to be a separate load→mutate→save() copy of the same
+    // logic, which is exactly the shape of race that produced the live TCS/PAYTM
+    // stop-loss bug (see markTarget1Hit's own doc).
+    const exitPrice = trade.currentPrice ?? trade.target1; // best available fill price
+    const updated = await markTarget1Hit(trade, exitPrice);
+    if (!updated) {
+      return res.status(409).json({ success: false, error: 'Target 1 already handled', code: 409 });
     }
-    await trade.save();
 
-    emitToUser(req.userId, SOCKET_EVENTS.TRADE_TARGET1, trade.toObject());
-    sendTarget1Hit(trade.toObject()).catch(() => {});
-
-    res.json({ success: true, data: trade.toObject(), message: 'Target 1 marked — SL trailed to entry' });
+    res.json({ success: true, data: updated.toObject(), message: 'Target 1 marked — SL trailed to entry' });
   } catch (err) {
     next(err);
   }
@@ -426,36 +421,23 @@ router.patch('/:id/close', validateBody(closeTradeSchema), async (req, res, next
     }
 
     const { exitPrice, exitReason, notes } = req.body;
-    // T1-aware and cost-aware: blends the banked T1 leg (if hit) with the final exit
-    // leg instead of pricing the whole position off only the last price — see
-    // computeCloseFields' own doc for why (this is the same fix tradeTracker's
-    // auto-close path already uses; this manual route was a separate, stale copy).
-    Object.assign(trade, computeCloseFields(trade, exitPrice, exitReason));
-    if (notes) trade.notes = notes;
-
-    await trade.save();
-
-    // Notify only this user's own connected clients — closed-trade P&L is private
-    emitToUser(req.userId, SOCKET_EVENTS.TRADE_CLOSED, {
-      _id: String(trade._id),
-      symbol: trade.symbol,
-      exitReason,
-      exitPrice,
-      realizedPnl: trade.realizedPnl,
-    });
-
-    if (exitReason === EXIT_REASONS.TARGET2) {
-      sendTarget2Hit(trade.toObject()).catch(() => {});
+    // Shares the same atomic, guarded findOneAndUpdate as the automated monitor —
+    // this manual route used to be a separate load→mutate→save() copy of the same
+    // computeCloseFields logic, racing against the monitor's own close attempts on
+    // the same document (see closeTrade's own doc for the live incident this fixed).
+    const updated = await closeTrade(trade, { exitPrice, exitReason, notes });
+    if (!updated) {
+      return res.status(409).json({ success: false, error: 'Trade already closed', code: 409 });
     }
 
     logger.info('Trade closed', {
-      symbol: trade.symbol,
+      symbol: updated.symbol,
       exitReason,
-      realizedPnl: trade.realizedPnl,
-      realizedPnlPct: trade.realizedPnlPct,
+      realizedPnl: updated.realizedPnl,
+      realizedPnlPct: updated.realizedPnlPct,
     });
 
-    res.json({ success: true, data: trade.toObject(), message: `Trade closed (${exitReason})` });
+    res.json({ success: true, data: updated.toObject(), message: `Trade closed (${exitReason})` });
   } catch (err) {
     next(err);
   }

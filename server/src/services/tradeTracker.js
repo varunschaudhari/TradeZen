@@ -382,45 +382,78 @@ function isPastMaxHold(trade) {
 /**
  * Mark Target 1 hit on a trade: book half, trail SL to entry, alert + emit.
  *
+ * Atomic + guarded on {status:'OPEN', target1Hit:false} — this exact race (two callers
+ * evaluating the same trade near-simultaneously) was diagnosed live 2026-07-31: TCS and
+ * PAYTM both ended up with stopLoss silently trailed to breakeven while target1Hit
+ * stayed false, because the old load→Object.assign→save() let one caller's T1-hit
+ * transition get overwritten by the other's stale in-memory copy. findOneAndUpdate
+ * matches 0 docs if another caller already handled T1, so exactly one caller ever
+ * applies the transition.
+ *
  * @param {object} trade - Mongoose Trade doc
  * @param {number} exitPrice - T1 fill price
- * @returns {Promise<object>} Updated trade
+ * @returns {Promise<object|null>} Updated trade, or null if a concurrent caller already hit T1
  */
 export const markTarget1Hit = async (trade, exitPrice) => {
-  Object.assign(trade, computeTarget1Fields(trade, exitPrice));
-  await trade.save();
-  emitToUser(trade.userId, SOCKET_EVENTS.TRADE_TARGET1, trade.toObject());
-  sendTarget1Hit(trade).catch((e) => logger.error('sendTarget1Hit failed', { error: e.message }));
-  logger.info(`Target 1 hit: ${trade.symbol} @ ₹${exitPrice} — SL trailed to ₹${trade.slTrailedTo}`);
-  return trade;
+  const fields = computeTarget1Fields(trade, exitPrice);
+  const updated = await Trade.findOneAndUpdate(
+    { _id: trade._id, status: TRADE_STATUSES.OPEN, target1Hit: false },
+    { $set: fields },
+    { new: true }
+  );
+  if (!updated) {
+    logger.warn(`markTarget1Hit: ${trade.symbol} T1 already handled by a concurrent update — skipping`);
+    return null;
+  }
+  emitToUser(updated.userId, SOCKET_EVENTS.TRADE_TARGET1, updated.toObject());
+  sendTarget1Hit(updated).catch((e) => logger.error('sendTarget1Hit failed', { error: e.message }));
+  logger.info(`Target 1 hit: ${updated.symbol} @ ₹${exitPrice} — SL trailed to ₹${updated.slTrailedTo}`);
+  return updated;
 };
 
 /**
  * Close a trade fully (manual or monitor-driven), compute realized P&L, alert + emit.
  *
- * @param {object} trade - Mongoose Trade doc
- * @param {object} opts - { exitPrice, exitReason }
- * @returns {Promise<object>} Closed trade
+ * Atomic + guarded on status:'OPEN' — the automated monitor (2-min cron and the 15-min
+ * full-scan's own pass) and the manual PATCH /:id/close route can both reach a trade at
+ * nearly the same instant; a plain load→mutate→save() here let one caller's close
+ * silently lose fields to the other's stale in-memory copy (see markTarget1Hit's own
+ * note — same race, same fix). findOneAndUpdate matches 0 docs if another caller closed
+ * it first, so exactly one caller ever applies the close and its side effects.
+ *
+ * @param {object} trade - Mongoose Trade doc (only _id/symbol/userId are relied on directly;
+ *   the rest is read by computeCloseFields from this same pre-race snapshot)
+ * @param {object} opts - { exitPrice, exitReason, notes? }
+ * @returns {Promise<object|null>} Closed trade, or null if a concurrent caller already closed it
  */
-export const closeTrade = async (trade, { exitPrice, exitReason = EXIT_REASONS.MANUAL }) => {
-  Object.assign(trade, computeCloseFields(trade, exitPrice, exitReason));
-  await trade.save();
+export const closeTrade = async (trade, { exitPrice, exitReason = EXIT_REASONS.MANUAL, notes }) => {
+  const fields = computeCloseFields(trade, exitPrice, exitReason);
+  if (notes) fields.notes = notes;
+  const updated = await Trade.findOneAndUpdate(
+    { _id: trade._id, status: TRADE_STATUSES.OPEN },
+    { $set: fields },
+    { new: true }
+  );
+  if (!updated) {
+    logger.warn(`closeTrade: ${trade.symbol} already closed by a concurrent update — skipping`);
+    return null;
+  }
   // Notify only this user's own connected clients so their Positions UI removes the card
-  emitToUser(trade.userId, SOCKET_EVENTS.TRADE_CLOSED, {
-    _id: String(trade._id),
-    symbol: trade.symbol,
+  emitToUser(updated.userId, SOCKET_EVENTS.TRADE_CLOSED, {
+    _id: String(updated._id),
+    symbol: updated.symbol,
     exitReason,
     exitPrice,
-    realizedPnl: trade.realizedPnl,
+    realizedPnl: updated.realizedPnl,
   });
   if (exitReason === EXIT_REASONS.TARGET2) {
-    emitToUser(trade.userId, SOCKET_EVENTS.TRADE_TARGET2, trade.toObject());
-    sendTarget2Hit(trade).catch((e) => logger.error('sendTarget2Hit failed', { error: e.message }));
+    emitToUser(updated.userId, SOCKET_EVENTS.TRADE_TARGET2, updated.toObject());
+    sendTarget2Hit(updated).catch((e) => logger.error('sendTarget2Hit failed', { error: e.message }));
   }
-  logger.info(`Trade closed: ${trade.symbol} ${exitReason} @ ₹${exitPrice}`, {
-    realizedPnl: trade.realizedPnl,
+  logger.info(`Trade closed: ${updated.symbol} ${exitReason} @ ₹${exitPrice}`, {
+    realizedPnl: updated.realizedPnl,
   });
-  return trade;
+  return updated;
 };
 
 /**
@@ -448,48 +481,66 @@ async function buildPriceMap(symbols) {
  */
 async function processTrade(trade, price, summary) {
   const decision = evaluateTrade(trade, price);
-  trade.currentPrice = price;
-  trade.unrealizedPnl = decision.unrealizedPnl;
-  trade.unrealizedPnlPct = decision.unrealizedPnlPct;
-  trade.highWaterMark = decision.highWaterMark;
 
   if (decision.slHit) {
-    await closeTrade(trade, { exitPrice: price, exitReason: EXIT_REASONS.STOPLOSS });
-    emitToUser(trade.userId, SOCKET_EVENTS.TRADE_SL_WARNING, {
-      tradeId: trade._id,
-      symbol: trade.symbol,
-      currentPrice: price,
-      stopLoss: decision.effectiveSl,
-      distancePct: 0,
-      hit: true,
-    });
-    summary.slHit += 1;
+    const closed = await closeTrade(trade, { exitPrice: price, exitReason: EXIT_REASONS.STOPLOSS });
+    if (closed) {
+      emitToUser(closed.userId, SOCKET_EVENTS.TRADE_SL_WARNING, {
+        tradeId: closed._id,
+        symbol: closed.symbol,
+        currentPrice: price,
+        stopLoss: decision.effectiveSl,
+        distancePct: 0,
+        hit: true,
+      });
+      summary.slHit += 1;
+    }
     return;
   }
   if (decision.t2Hit) {
-    await closeTrade(trade, { exitPrice: price, exitReason: EXIT_REASONS.TARGET2 });
-    summary.t2 += 1;
+    if (await closeTrade(trade, { exitPrice: price, exitReason: EXIT_REASONS.TARGET2 })) summary.t2 += 1;
     return;
   }
   // Max-hold time exit for AUTO paper trades: neither target nor stop hit in the window —
   // close at the current price so the paper record resolves (feeds calibration).
   if (trade.source === 'AUTO' && isPastMaxHold(trade)) {
-    trade.notes = `${trade.notes ?? ''} | closed: max-hold (${MAX_PAPER_HOLD_DAYS}d) time exit`.trim();
-    await closeTrade(trade, { exitPrice: price, exitReason: EXIT_REASONS.TIME_EXIT });
-    summary.timeExit = (summary.timeExit ?? 0) + 1;
+    const notes = `${trade.notes ?? ''} | closed: max-hold (${MAX_PAPER_HOLD_DAYS}d) time exit`.trim();
+    if (await closeTrade(trade, { exitPrice: price, exitReason: EXIT_REASONS.TIME_EXIT, notes })) {
+      summary.timeExit = (summary.timeExit ?? 0) + 1;
+    }
     return;
   }
   if (decision.t1Hit) {
-    await markTarget1Hit(trade, price);
-    summary.t1 += 1;
-  } else if (decision.trailAdvanceTo != null) {
-    // Ratchet the ATR trail upward (post-T1). No alert — this is routine maintenance;
-    // the SL-warning / close paths speak when it matters.
-    trade.slTrailed = true;
-    trade.slTrailedTo = decision.trailAdvanceTo;
+    // markTarget1Hit is atomic + guarded (target1Hit:false) — whether it wins or loses
+    // a race with a concurrent caller, the trade's true state is settled by *someone*
+    // this cycle; re-checking slWarning/earnings below against our now-stale in-memory
+    // copy would risk exactly the kind of lost-update this refactor exists to prevent,
+    // so stop here and pick those up next cycle (2 min away — a trivial delay).
+    if (await markTarget1Hit(trade, price)) summary.t1 += 1;
+    return;
+  }
+
+  // Everything below is one atomic, guarded update — never a load→mutate→save() on this
+  // trade — so it can never silently clobber (or be clobbered by) a concurrent close/T1
+  // transition landing on the same document at the same instant.
+  const setFields = {
+    currentPrice: price,
+    unrealizedPnl: decision.unrealizedPnl,
+    unrealizedPnlPct: decision.unrealizedPnlPct,
+    highWaterMark: decision.highWaterMark,
+  };
+  const maxFields = {};
+
+  if (decision.trailAdvanceTo != null) {
+    // Ratchet the ATR trail upward (post-T1). $max makes the ratchet itself race-safe
+    // even without the target1Hit:true guard below — a stale, lower proposal from a
+    // slow concurrent reader can never move it backwards. No alert — this is routine
+    // maintenance; the SL-warning / close paths speak when it matters.
+    setFields.slTrailed = true;
+    maxFields.slTrailedTo = decision.trailAdvanceTo;
     summary.trailAdvanced = (summary.trailAdvanced ?? 0) + 1;
   } else if (decision.slWarning && notThrottled(trade)) {
-    trade.lastSlWarningAt = new Date();
+    setFields.lastSlWarningAt = new Date();
     emitToUser(trade.userId, SOCKET_EVENTS.TRADE_SL_WARNING, {
       tradeId: trade._id,
       symbol: trade.symbol,
@@ -503,7 +554,7 @@ async function processTrade(trade, price, summary) {
     summary.warnings += 1;
   }
   if (decision.earningsDue) {
-    trade.earningsAlertSent = true;
+    setFields.earningsAlertSent = true;
     emitToUser(trade.userId, SOCKET_EVENTS.TRADE_EARNINGS, {
       symbol: trade.symbol,
       daysToEarnings: decision.daysToEarnings,
@@ -513,7 +564,10 @@ async function processTrade(trade, price, summary) {
     );
     summary.earnings += 1;
   }
-  await trade.save();
+
+  const update = { $set: setFields };
+  if (Object.keys(maxFields).length) update.$max = maxFields;
+  await Trade.updateOne({ _id: trade._id, status: TRADE_STATUSES.OPEN }, update);
 }
 
 function notThrottled(trade) {
