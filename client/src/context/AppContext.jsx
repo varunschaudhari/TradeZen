@@ -13,7 +13,9 @@ import { configApi } from '../services/api.js';
 const AppContext = createContext(null);
 
 export const AppProvider = ({ children }) => {
-  const [marketMode, setMarketMode] = useState('BULL');
+  // null (not a guessed mode) until the real fetch resolves — Layout.jsx mounts
+  // useMarketStatus() on every page specifically so this never sits on a stale guess.
+  const [marketMode, setMarketMode] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
   const [lastScanTime, setLastScanTime] = useState(null);
   const [config, setConfig] = useState(null);

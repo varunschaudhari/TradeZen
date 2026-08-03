@@ -14,6 +14,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { useNotifications } from '../context/NotificationContext.jsx';
 import NotificationDrawer, { BellIcon } from './NotificationDrawer.jsx';
 import useServiceHealth from '../hooks/useServiceHealth.js';
+import useMarketStatus from '../hooks/useMarketStatus.js';
 
 /* ── Mobile bottom tab config ───────────────────────────────────────────────── */
 const BOTTOM_TABS = [
@@ -343,6 +344,11 @@ const Layout = ({ children }) => {
   const [notifOpen,    setNotifOpen]    = useState(false);
   const { unreadCount } = useNotifications();
   const location = useLocation();
+
+  // Mounted here — not in Dashboard.jsx — because Layout wraps every authenticated
+  // page. Dashboard-only used to leave AppContext.marketMode on its initial guess
+  // for any user who loaded/refreshed on another page and never visited Dashboard.
+  useMarketStatus();
 
   /* Close sidebar on route change (mobile) */
   useEffect(() => { setOpen(false); }, [location.pathname]);
