@@ -199,6 +199,16 @@ const IntradayTrading = () => {
     });
   }, [signals, filters]);
 
+  // Today's session P&L — distinct from the "Net P&L" tile below, which is all-time.
+  // Settled legs are realized (paperPnl); still-open legs are marked-to-market via the
+  // live quote /live already fetched (unrealizedGross) — summing both gives "how is
+  // today going" including whatever's still in flight, not just what's closed so far.
+  const todaysPnl = useMemo(() => {
+    const settledNet = (live.settled ?? []).reduce((s, x) => s + (x.paperPnl ?? 0), 0);
+    const openNet = (live.open ?? []).reduce((s, x) => s + (x.unrealizedGross ?? 0), 0);
+    return { settledNet, openNet, total: settledNet + openNet };
+  }, [live]);
+
   const activeFilterCount =
     filters.strategies.length + filters.directions.length + filters.outcomes.length +
     (filters.symbol ? 1 : 0) + (filters.from ? 1 : 0) + (filters.to ? 1 : 0);
@@ -241,7 +251,7 @@ const IntradayTrading = () => {
       </div>
 
       {/* Stats strip */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <StatTile
           label="Win Rate"
           value={stats?.winRate != null ? `${stats.winRate}%` : '—'}
@@ -250,7 +260,20 @@ const IntradayTrading = () => {
           loading={loading}
         />
         <StatTile
-          label="Net P&L"
+          label="Today's P&L"
+          value={live.sessionDate ? formatCurrency(todaysPnl.total) : '—'}
+          sublabel={
+            live.sessionDate
+              ? `settled ${formatCurrency(todaysPnl.settledNet)}${
+                  live.open.length ? ` · open ${formatCurrency(todaysPnl.openNet)}` : ''
+                }`
+              : null
+          }
+          tone={todaysPnl.total >= 0 ? 'bull' : 'bear'}
+          loading={loading}
+        />
+        <StatTile
+          label="Net P&L (All-Time)"
           value={stats ? formatCurrency(stats.totalPaperPnl) : '—'}
           sublabel={stats ? `gross ${formatCurrency(stats.totalGrossPnl)}` : null}
           tone={stats?.totalPaperPnl >= 0 ? 'bull' : 'bear'}

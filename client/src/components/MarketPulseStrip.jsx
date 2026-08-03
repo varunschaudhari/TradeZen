@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
-import { MARKET_MODE_COLORS } from '../utils/constants.js';
 
 /* ── Market open/close countdown (IST) ─────────────────────────────── */
 function getMarketCountdown() {
@@ -40,8 +39,8 @@ function getMarketCountdown() {
 }
 
 const PulseItem = ({ label, value, sub, subUp, niftyGlow }) => (
-  <div className="flex flex-col px-4 border-r border-slate-700/50 last:border-r-0">
-    <span className="text-[9px] uppercase tracking-widest text-slate-600 leading-tight">{label}</span>
+  <div className="flex flex-col min-w-[94px] px-4 border-r border-slate-700/50 last:border-r-0">
+    <span className="text-[9px] uppercase tracking-widest text-slate-600 leading-tight whitespace-nowrap">{label}</span>
     <span
       className={`font-mono text-[13px] font-bold tabular-nums leading-snug transition-all ${
         niftyGlow ? 'text-emerald-400 glow-bull' : 'text-slate-100'
@@ -49,11 +48,9 @@ const PulseItem = ({ label, value, sub, subUp, niftyGlow }) => (
     >
       {value ?? '—'}
     </span>
-    {sub != null && (
-      <span className={`font-mono text-[10px] tabular-nums leading-tight ${subUp ? 'text-emerald-400' : 'text-red-400'}`}>
-        {sub}
-      </span>
-    )}
+    <span className={`font-mono text-[10px] tabular-nums leading-tight ${sub != null ? (subUp ? 'text-emerald-400' : 'text-red-400') : 'invisible'}`}>
+      {sub ?? '—'}
+    </span>
   </div>
 );
 
@@ -91,9 +88,11 @@ const MarketPulseStrip = ({ market }) => {
   const isTomorrow = holiday?.daysAway === 1;
   const isSoon     = holiday?.daysAway != null && holiday.daysAway <= 4;
 
+  // Kept in sync with Layout.jsx's sidebar MODE_STYLES — same 4 modes, same hues.
   const modeBg = {
     BULL:    'bg-emerald-500/15 text-emerald-400',
     CAUTION: 'bg-amber-500/15 text-amber-400',
+    MIXED:   'bg-orange-500/15 text-orange-400',
     BEAR:    'bg-red-500/15 text-red-400',
   }[market.marketMode] ?? 'bg-slate-700/40 text-slate-400';
 

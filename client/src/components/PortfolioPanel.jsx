@@ -27,20 +27,25 @@ const isMarketHours = () => {
 };
 
 /* ══════════════════════════════════════════════════════════════════
-   Equity Sparkline — tiny curve from monthly capital snapshots
+   Equity Sparkline — monthly capital curve with hover crosshair + tooltip
+   (single series → no legend box needed; the card title already says
+   what's plotted, per dataviz reference marks-and-anatomy.md)
 ═══════════════════════════════════════════════════════════════════ */
 const Sparkline = ({ points }) => {
+  const [hoverIdx, setHoverIdx] = useState(null);
+
   if (!points || points.length < 2) {
     return <span className="text-[10px] text-slate-700 italic">equity — building…</span>;
   }
-  const W = 96, H = 26;
-  const min = Math.min(...points), max = Math.max(...points);
+  const W = 132, H = 40, PAD = 5;
+  const values = points.map((p) => p.capital);
+  const min = Math.min(...values), max = Math.max(...values);
   const span = max - min || 1;
-  const coords = points.map((v, i) => ({
-    x: (i / (points.length - 1)) * W,
-    y: H - ((v - min) / span) * (H - 4) - 2,
+  const coords = points.map((p, i) => ({
+    x: points.length > 1 ? (i / (points.length - 1)) * W : W / 2,
+    y: H - ((p.capital - min) / span) * (H - PAD * 2) - PAD,
   }));
-  const up = points[points.length - 1] >= points[0];
+  const up = values[values.length - 1] >= values[0];
   const color = up ? '#22c55e' : '#ef4444';
   const gradId = up ? 'spk-bull' : 'spk-bear';
 
@@ -64,21 +69,72 @@ const Sparkline = ({ points }) => {
   const last = coords[coords.length - 1];
   const areaPath = `${linePath} L${last.x},${H} L${coords[0].x},${H} Z`;
 
+  const nearestIdx = (clientX, svgEl) => {
+    const rect = svgEl.getBoundingClientRect();
+    const relX = ((clientX - rect.left) / rect.width) * W;
+    let best = 0, bestDist = Infinity;
+    coords.forEach((c, i) => {
+      const d = Math.abs(c.x - relX);
+      if (d < bestDist) { bestDist = d; best = i; }
+    });
+    return best;
+  };
+
+  const hovered = hoverIdx != null ? points[hoverIdx] : null;
+  const hoveredCoord = hoverIdx != null ? coords[hoverIdx] : null;
+  // Clamp the tooltip's horizontal position so it never spills past the chart edges.
+  const tooltipLeftPct = hoveredCoord ? Math.min(88, Math.max(12, (hoveredCoord.x / W) * 100)) : 50;
+
   return (
-    <svg width={W} height={H} className="overflow-visible flex-shrink-0" aria-label="equity curve">
-      <defs>
-        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stopColor={color} stopOpacity="0.35" />
-          <stop offset="100%" stopColor={color} stopOpacity="0.02" />
-        </linearGradient>
-      </defs>
-      <path d={areaPath} fill={`url(#${gradId})`} />
-      <path d={linePath} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-      <circle cx={last.x} cy={last.y} r="2.5" fill={color} />
-    </svg>
+    <div className="relative">
+      <svg
+        width={W}
+        height={H}
+        className="overflow-visible flex-shrink-0 cursor-crosshair"
+        aria-label="equity curve"
+        onMouseMove={(e) => setHoverIdx(nearestIdx(e.clientX, e.currentTarget))}
+        onMouseLeave={() => setHoverIdx(null)}
+      >
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stopColor={color} stopOpacity="0.35" />
+            <stop offset="100%" stopColor={color} stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        <path d={areaPath} fill={`url(#${gradId})`} />
+        <path d={linePath} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+        <circle cx={last.x} cy={last.y} r="2.5" fill={color} />
+        {/* Crosshair — vertical hairline snapping to the hovered month, per dataviz interaction.md */}
+        {hoveredCoord && (
+          <>
+            <line
+              x1={hoveredCoord.x} x2={hoveredCoord.x} y1="0" y2={H}
+              stroke="#64748b" strokeWidth="1" strokeDasharray="2,2" opacity="0.6"
+            />
+            <circle cx={hoveredCoord.x} cy={hoveredCoord.y} r="4" fill={color} stroke="#1e293b" strokeWidth="2" />
+          </>
+        )}
+      </svg>
+      {hovered && (
+        <div
+          className="absolute -top-11 -translate-x-1/2 z-10 whitespace-nowrap rounded-md border border-slate-700 bg-surface-elevated px-2 py-1 shadow-xl pointer-events-none"
+          style={{ left: `${tooltipLeftPct}%` }}
+        >
+          <p className="text-[9px] text-slate-500 leading-tight">{hovered.label}</p>
+          <p className="text-[11px] font-mono font-bold text-slate-100 leading-tight tabular-nums">
+            {formatCurrency(hovered.capital, 0)}
+          </p>
+        </div>
+      )}
+    </div>
   );
 };
-Sparkline.propTypes = { points: PropTypes.arrayOf(PropTypes.number) };
+Sparkline.propTypes = {
+  points: PropTypes.arrayOf(PropTypes.shape({
+    label: PropTypes.string,
+    capital: PropTypes.number,
+  })),
+};
 
 /* ══════════════════════════════════════════════════════════════════
    Risk-o-meter — SVG semicircle gauge showing max-loss % of capital
@@ -163,9 +219,20 @@ const HeatMap = ({ positions, maxSlots }) => {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-2.5 flex-wrap gap-2">
         <p className="text-[10px] uppercase tracking-widest text-slate-500">Portfolio Heat Map</p>
-        <p className="text-[10px] text-slate-600">{positions.length} / {maxSlots} slots filled</p>
+        <div className="flex items-center gap-3">
+          {/* Diverging scale legend — color encodes unrealized P&L%, red↔gray↔green */}
+          <div className="flex items-center gap-1.5 text-[9px] text-slate-600" aria-hidden="true">
+            <span>Loss</span>
+            <div
+              className="w-14 h-1.5 rounded-full"
+              style={{ background: 'linear-gradient(90deg, #ef4444 0%, #475569 50%, #22c55e 100%)' }}
+            />
+            <span>Profit</span>
+          </div>
+          <p className="text-[10px] text-slate-600">{positions.length} / {maxSlots} slots filled</p>
+        </div>
       </div>
       <div className="stagger-grid grid grid-cols-5 gap-1.5">
         {slots.map((p, i) => (
@@ -335,7 +402,7 @@ const PortfolioPanel = ({ perf }) => {
   useEffect(() => {
     performanceApi.getHistory().then((r) => {
       const monthly = (r?.data?.monthly ?? r?.monthly ?? []);
-      setEquity(monthly.map((m) => m.capital).filter((c) => c != null));
+      setEquity(monthly.filter((m) => m?.capital != null));
     }).catch(() => {});
   }, []);
 
@@ -494,22 +561,23 @@ const PortfolioPanel = ({ perf }) => {
                              hover:border-slate-600 hover:bg-slate-800/60
                              transition-all px-3 pt-2.5 pb-1.5 text-left"
                 >
-                  {/* Top row: symbol · price · P&L · status */}
+                  {/* Top row: symbol · price · P&L · status — fixed column widths so
+                      values align vertically row-to-row instead of drifting with digit count */}
                   <div className="flex items-center gap-3">
-                    <span className="font-mono font-bold text-slate-100 text-sm w-28 truncate">
+                    <span className="font-mono font-bold text-slate-100 text-sm w-24 truncate flex-shrink-0">
                       {p.symbol}
                     </span>
-                    <span className="font-mono text-[11px] text-slate-400 tabular-nums">
+                    <span className="font-mono text-[11px] text-slate-400 tabular-nums w-20 flex-shrink-0">
                       ₹{p.currentPrice?.toLocaleString('en-IN') ?? '—'}
                     </span>
                     <span
-                      className={`font-mono text-sm font-bold tabular-nums ml-auto ${
+                      className={`font-mono text-sm font-bold tabular-nums w-24 flex-shrink-0 ${
                         up ? 'text-emerald-400' : 'text-red-400'
                       }`}
                     >
                       {up ? '▲' : '▼'} {formatPercent(Math.abs(p.unrealizedPnlPct ?? 0))}
                     </span>
-                    <span className={`text-[10px] w-36 text-right flex-shrink-0 ${st.cls}`}>
+                    <span className={`text-[10px] ml-auto text-right flex-shrink-0 ${st.cls}`}>
                       {st.label}
                     </span>
                   </div>
