@@ -514,6 +514,18 @@ export const runOrbScan = async ({ forceRun = false } = {}) => {
         }
         if (done.has(doneKey(symbol, setupType, verdict.direction))) continue; // already alerted this session
 
+        // ORB-LONG-in-BEAR suppression: diagnosed 2026-07-31 against the live go-live
+        // evidence window (23 settled ORB trades, 2026-07-20 onward) — 21 of 23 were
+        // LONG, carrying the entire net loss (-₹1,682 LONG vs +₹176 SHORT), and 12 of
+        // those 21 fired during BEAR regime, accounting for 94% of the total loss.
+        // Counterfactual on that same window (excluding just those 12 trades) flips net
+        // expectancy from -₹65.49 to +₹7.63/trade and profit factor from 0.42 to 1.10.
+        // SHORT stays enabled in BEAR — that side was profitable in the same sample.
+        if (setupType === 'ORB' && verdict.direction === 'LONG' && marketHealth?.marketMode === 'BEAR') {
+          reject('BEAR_LONG_SUPPRESSED');
+          continue;
+        }
+
         const { stop, target } = levels(snap, verdict.direction);
 
         if (fadedOnLiveQuote(setupType, verdict.direction, snap.lastPrice, stop, live)) {
