@@ -88,7 +88,11 @@ MIN_AVG_TURNOVER_INR: float = 10_000_000.0   # ₹1 crore avg daily turnover flo
 
 # Pre-filter 2 — Market cap: index-tier proxy (constituents carry a tier tag).
 # Default allows every tier; callers may restrict (e.g. exclude SMALLCAP).
-MARKET_CAP_TIERS: tuple[str, ...] = ("NIFTY50", "NEXT50", "MIDCAP150", "SMALLCAP100")
+# EXTENDED (added 2026-08-03): ~3,880 NSE-listed symbols outside the four curated
+# index tiers above, scraped from Dhan's stock listing (ticker + sector; no verified
+# market-cap/liquidity data). Included in the live scan by explicit choice, accepting
+# that most will be filtered out by pre-filter 1 (liquidity) rather than reach a gate.
+MARKET_CAP_TIERS: tuple[str, ...] = ("NIFTY50", "NEXT50", "MIDCAP150", "SMALLCAP100", "EXTENDED")
 
 # Pre-filter 3 — Trend: price above EMA50 and EMA50 above EMA200 (stacked uptrend)
 # (uses EMA_MID and EMA_LONG defined above)

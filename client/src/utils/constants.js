@@ -95,3 +95,4 @@ export const EXIT_REASONS = Object.freeze({
 export const MAX_OPEN_TRADES          = 25;
 export const MAX_CAPITAL_DEPLOYED_PCT = 95;
 export const DEFAULT_RISK_PCT         = 0.4;
+export const MAX_PAPER_HOLD_DAYS      = 21; // AUTO trades only — time-exit backstop

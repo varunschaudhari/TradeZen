@@ -8,6 +8,7 @@ Created: 2026-06-19
 Last Modified: 2026-06-19
 """
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -36,7 +37,14 @@ async def screen_stocks(request: ScreenRequest) -> ScreenResponse:
     """
     try:
         tiers = tuple(request.tiers) if request.tiers else None
-        return screen_universe(
+        # screen_universe is synchronous and does thousands of sequential blocking
+        # yfinance calls at the EXTENDED tier's scale (~700s) — calling it directly
+        # from this async handler would freeze this entire uvicorn worker's event
+        # loop for the whole duration (diagnosed 2026-08-04: ~1 in 4 requests hung
+        # for ~12min during a scan). to_thread runs it in FastAPI's thread pool
+        # instead, so this worker keeps serving other requests concurrently.
+        return await asyncio.to_thread(
+            screen_universe,
             tiers=tiers,
             check_earnings=request.checkEarnings,
             extra_symbols=request.extraSymbols,

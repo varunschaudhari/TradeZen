@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import PropTypes from 'prop-types';
 import { formatCurrency, formatPercent, formatDateTime } from '../utils/formatters.js';
+import { MAX_PAPER_HOLD_DAYS } from '../utils/constants.js';
 import PositionTracker from './PositionTracker.jsx';
 
 /* Tiny inline sparkline — 7 daily closes as a polyline, entry price as dashed baseline */
@@ -62,6 +63,15 @@ const TradeCard = ({ trade, sparklineCloses, onMarkT1Hit, onMarkClosed, onMarkSL
     ? Math.floor((Date.now() - new Date(trade.entryDate).getTime()) / 86_400_000)
     : null;
   const daysLabel = daysIn == null ? '' : daysIn === 0 ? 'today' : `${daysIn}d`;
+
+  // Time-exit backstop applies only to AUTO (auto-opened) paper trades — see MAX_PAPER_HOLD_DAYS.
+  const daysToTimeExit = trade.source === 'AUTO' && daysIn != null
+    ? MAX_PAPER_HOLD_DAYS - daysIn
+    : null;
+  const timeExitDate = trade.source === 'AUTO' && trade.entryDate
+    ? new Date(new Date(trade.entryDate).getTime() + MAX_PAPER_HOLD_DAYS * 86_400_000)
+    : null;
+  const timeExitUrgent = daysToTimeExit != null && daysToTimeExit <= 3;
 
   /* Left-border accent reflects urgency: red = exit risk, green = book profit, blue = trail, neutral = hold */
   const urgencyBorder =
@@ -180,13 +190,25 @@ const TradeCard = ({ trade, sparklineCloses, onMarkT1Hit, onMarkClosed, onMarkSL
         </div>
       </div>
 
-      <div className="text-xs text-slate-500 flex items-center gap-1.5">
+      <div className="text-xs text-slate-500 flex items-center gap-1.5 flex-wrap">
         {daysLabel && (
           <span className="font-mono text-slate-400 bg-slate-700/50 rounded px-1 py-px text-[10px] shrink-0">
             {daysLabel}
           </span>
         )}
         <span>Entered {formatDateTime(trade.entryDate)}</span>
+        {timeExitDate && (
+          <span
+            className={`font-mono rounded px-1 py-px text-[10px] shrink-0 border ${
+              timeExitUrgent
+                ? 'text-wait bg-wait/10 border-wait/30'
+                : 'text-slate-400 bg-slate-700/50 border-transparent'
+            }`}
+            title={`Auto paper trade — force-closes on ${formatDateTime(timeExitDate)} (${MAX_PAPER_HOLD_DAYS}d hold limit) if SL/target isn't hit first`}
+          >
+            time-exit {daysToTimeExit <= 0 ? 'due' : `${daysToTimeExit}d`}
+          </span>
+        )}
       </div>
 
       {/* ── Notes section ─────────────────────────────────────────────── */}
@@ -294,6 +316,7 @@ TradeCard.propTypes = {
     _id:              PropTypes.string.isRequired,
     symbol:           PropTypes.string.isRequired,
     sector:           PropTypes.string,
+    source:           PropTypes.string,
     entryPrice:       PropTypes.number,
     currentPrice:     PropTypes.number,
     stopLoss:         PropTypes.number,

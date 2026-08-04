@@ -174,7 +174,12 @@ export const screenUniverse = async ({
       pythonClient.post(
         '/screen',
         { tiers, checkEarnings, extraSymbols },
-        { timeout: 300_000 } // universe-wide OHLCV download can take minutes
+        // Raised 300s->40min (2026-08-03): the EXTENDED tier took the universe from
+        // ~625 to ~4,500 symbols; screening is sequential (no concurrency in screener.py),
+        // so duration scales roughly with symbol count. Paired with SCAN_INTERVAL_MINUTES
+        // (15->45) and the scheduler's overlap guard — this timeout just needs to not
+        // fire before a legitimately-running scan finishes.
+        { timeout: 40 * 60_000 }
       )
     );
     return response.data;

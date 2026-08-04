@@ -81,7 +81,7 @@ These are not configuration options — they are hard-coded requirements that mu
 
 4. **Daily loss pause.** If closed trades today total a loss ≥ 3% of capital, BUY signals are downgraded to WAIT for the rest of the day. Implemented in `marketScanner.js → isDailyLossPaused()`. Constant: `DAILY_LOSS_PAUSE_PCT = 3`.
 
-5. **Max 15 simultaneous positions.** `MAX_OPEN_TRADES = 15` (`constants.js`). Raised from the original 3-position design once risk-per-trade dropped to 0.4% — 15 concurrent positions ≈ 6% total portfolio risk if every one stops out simultaneously. The scanner enforces this before saving any BUY signal.
+5. **Max 25 simultaneous positions.** `MAX_OPEN_TRADES = 25` (`constants.js`). Raised 2026-07-20 from 15 (itself raised from an original 3) once risk-per-trade dropped to 0.4% — 25 concurrent positions ≈ 10% total portfolio risk if every one stops out simultaneously (worst case; positions aren't perfectly correlated in practice), up from 6% at the 15-slot cap. In practice the 95% capital cap binds first at typical position sizing (~15–16 positions before `MAX_CAPITAL_DEPLOYED_PCT` is reached, per the ₹61k average deployed/trade observed 2026-07-15) — 25 slots removes the count as the artificial bottleneck and lets capital/sector caps do the real gatekeeping instead. The scanner enforces this before saving any BUY signal.
 
 6. **Max 95% capital deployed, regime-tiered down from there.** `MAX_CAPITAL_DEPLOYED_PCT = 95` is the absolute ceiling; the effective cap is `min(95%, DEPLOYMENT_CAP_BY_MODE[marketMode])` — 80% in BULL, 65% in MIXED, 50% in CAUTION, 20% in BEAR — so capacity shrinks as the regime degrades, not just position size. Checked against sum of all open `capitalDeployed` fields before any new BUY.
 
@@ -348,9 +348,9 @@ EARNINGS_BUFFER_DAYS = 15           // Gate 3
 GATES_REQUIRED_FOR_CLAUDE = 5       // minimum gates before the verdict engine runs (legacy name)
 SL_WARNING_PCT = 2                  // % distance to SL that triggers warning event
 DAILY_LOSS_PAUSE_PCT = 3            // daily loss % that pauses BUY signals
-MAX_OPEN_TRADES = 15                // raised from 3 once risk-per-trade dropped to 0.4%
+MAX_OPEN_TRADES = 25                // raised 2026-07-20 from 15 (from 3) — capital/sector caps bind first in practice
 MAX_CAPITAL_DEPLOYED_PCT = 95       // absolute ceiling — see DEPLOYMENT_CAP_BY_MODE below
-DEFAULT_RISK_PCT = 0.4              // lowered from 1% to keep aggregate risk in check at 15 positions
+DEFAULT_RISK_PCT = 0.4              // lowered from 1% to keep aggregate risk in check at higher position counts
 DEDUPLICATION_HOURS = 4             // min gap between BUY signals for same symbol
 MAX_POSITIONS_PER_SECTOR = 3        // portfolio-level guard, checked at BUY-save and auto-open
 MAX_SECTOR_DEPLOYED_PCT = 25        // % of capital, same sector — the book once sat 59% in financials

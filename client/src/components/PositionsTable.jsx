@@ -8,6 +8,7 @@ import React, { useState } from 'react';
 import PropTypes from 'prop-types';
 import { ACTION_STYLES } from './TradeCard.jsx';
 import { formatCurrency, formatPercent } from '../utils/formatters.js';
+import { MAX_PAPER_HOLD_DAYS } from '../utils/constants.js';
 
 const PositionsTable = ({ trades, onMarkT1Hit, onMarkSLHit, onMarkClosed, onQuickClose, slWarnings }) => {
   const [pendingCloseId, setPendingCloseId] = useState(null);
@@ -29,6 +30,7 @@ const PositionsTable = ({ trades, onMarkT1Hit, onMarkSLHit, onMarkClosed, onQuic
             <th className="pb-2 pr-4">P&L %</th>
             <th className="pb-2 pr-4">R</th>
             <th className="pb-2 pr-4">Days</th>
+            <th className="pb-2 pr-4">Time-exit</th>
             <th className="pb-2 pr-4">Action</th>
             <th className="pb-2">Manage</th>
           </tr>
@@ -40,6 +42,8 @@ const PositionsTable = ({ trades, onMarkT1Hit, onMarkSLHit, onMarkClosed, onQuic
             const actionStyle = live ? (ACTION_STYLES[live.action] ?? ACTION_STYLES.HOLD) : null;
             const hasPrice = t.currentPrice != null && t.currentPrice > 0;
             const daysIn = t.entryDate ? Math.floor((Date.now() - new Date(t.entryDate).getTime()) / 86_400_000) : null;
+            const daysToTimeExit = t.source === 'AUTO' && daysIn != null ? MAX_PAPER_HOLD_DAYS - daysIn : null;
+            const timeExitUrgent = daysToTimeExit != null && daysToTimeExit <= 3;
             const flagged = slWarnings?.has(String(t._id));
             return (
               <tr key={t._id} className={`border-b border-slate-800 hover:bg-slate-800/40 ${flagged ? 'bg-bear/5' : ''}`}>
@@ -57,6 +61,18 @@ const PositionsTable = ({ trades, onMarkT1Hit, onMarkSLHit, onMarkClosed, onQuic
                 <td className={`py-2 pr-4 font-mono ${pnlClass}`}>{formatPercent(t.unrealizedPnlPct)}</td>
                 <td className="py-2 pr-4 font-mono text-blue-400">{live?.rMultiple != null ? `${live.rMultiple}R` : '—'}</td>
                 <td className="py-2 pr-4 text-slate-400">{daysIn == null ? '—' : daysIn === 0 ? 'today' : `${daysIn}d`}</td>
+                <td className="py-2 pr-4">
+                  {daysToTimeExit == null ? (
+                    <span className="text-slate-600">—</span>
+                  ) : (
+                    <span
+                      className={`font-mono ${timeExitUrgent ? 'text-wait' : 'text-slate-500'}`}
+                      title={`Auto paper trade — force-closes after ${MAX_PAPER_HOLD_DAYS}d hold if SL/target isn't hit first`}
+                    >
+                      {daysToTimeExit <= 0 ? 'due' : `${daysToTimeExit}d`}
+                    </span>
+                  )}
+                </td>
                 <td className="py-2 pr-4">
                   {actionStyle ? (
                     <span className={`text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap ${actionStyle.box}`} title={live?.reason}>

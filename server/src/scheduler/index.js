@@ -168,10 +168,27 @@ export async function catchUpIntradayUniverseIfStale() {
 export const startScheduler = () => {
   const interval = parseInt(process.env.SCAN_INTERVAL_MINUTES ?? '15', 10);
 
-  // JOB 1 — Main market scanner (every N min; market-hours guard is inside runFullScan)
+  // JOB 1 — Main market scanner (every N min; market-hours guard is inside runFullScan).
+  // Overlap-guarded: the EXTENDED universe tier (added 2026-08-03, ~4,500 symbols total)
+  // pushed measured scan duration close to (sometimes past) the prior 300s Python-client
+  // timeout — a scan overrunning into the next tick with no guard would stack scans
+  // indefinitely (screener fetches are sequential, not parallelized). This just skips a
+  // tick if the previous scan hasn't finished; it never queues or kills anything.
+  let scanRunning = false;
   cron.schedule(
     `*/${interval} * * * *`,
-    job('main-scan', () => runFullScan())
+    job('main-scan', async () => {
+      if (scanRunning) {
+        logger.warn('main-scan skipped — previous scan still running');
+        return;
+      }
+      scanRunning = true;
+      try {
+        await runFullScan();
+      } finally {
+        scanRunning = false;
+      }
+    })
   );
 
   // JOB 12 — Live open-position monitor + price alert check (every 2 min, market hours only).
