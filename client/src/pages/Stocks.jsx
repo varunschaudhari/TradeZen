@@ -12,8 +12,9 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import PropTypes from 'prop-types';
+import toast from 'react-hot-toast';
 import useSocket from '../hooks/useSocket.js';
-import { monitorApi } from '../services/api.js';
+import { monitorApi, watchlistApi } from '../services/api.js';
 import { SOCKET_EVENTS, SCAN_STAGE_STYLES } from '../utils/constants.js';
 import { timeAgo, formatIndianNumber } from '../utils/formatters.js';
 
@@ -50,6 +51,7 @@ const Stocks = () => {
   const [status, setStatus] = useState('ALL');
   const [sortKey, setSortKey] = useState('score'); // score | symbol | gates | lastScan
   const [page, setPage] = useState(0);
+  const [addingSymbol, setAddingSymbol] = useState(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -64,6 +66,36 @@ const Stocks = () => {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  const setRowWatchlisted = useCallback((symbol, inWatchlist) => {
+    setData((prev) => prev && {
+      ...prev,
+      stocks: prev.stocks.map((s) => (s.symbol === symbol ? { ...s, inWatchlist } : s)),
+    });
+  }, []);
+
+  const handleToggleWatchlist = useCallback(async (stock) => {
+    setAddingSymbol(stock.symbol);
+    try {
+      if (stock.inWatchlist) {
+        await watchlistApi.remove(stock.symbol);
+        toast.success(`${stock.symbol} removed from watchlist`);
+        setRowWatchlisted(stock.symbol, false);
+      } else {
+        await watchlistApi.add(stock.symbol, stock.sector || '');
+        toast.success(`${stock.symbol} added to watchlist`);
+        setRowWatchlisted(stock.symbol, true);
+      }
+    } catch (err) {
+      if (!stock.inWatchlist && /already/i.test(err.message)) {
+        setRowWatchlisted(stock.symbol, true);
+      } else {
+        toast.error(err.message);
+      }
+    } finally {
+      setAddingSymbol(null);
+    }
+  }, [setRowWatchlisted]);
 
   // Refresh when a scan finishes.
   useEffect(() => {
@@ -238,7 +270,17 @@ const Stocks = () => {
                         <span className="text-slate-600 text-xs">—</span>
                       )}
                     </td>
-                    <td className="py-1.5 text-right">
+                    <td className="py-1.5 text-right whitespace-nowrap">
+                      <button
+                        onClick={() => handleToggleWatchlist(s)}
+                        disabled={addingSymbol === s.symbol}
+                        title={s.inWatchlist ? `Remove ${s.symbol} from your watchlist` : `Add ${s.symbol} to your watchlist`}
+                        className={`text-[11px] disabled:opacity-50 mr-2 ${
+                          s.inWatchlist ? 'text-slate-500 hover:text-bear' : 'text-slate-400 hover:text-accent'
+                        }`}
+                      >
+                        {addingSymbol === s.symbol ? '…' : s.inWatchlist ? '✕ Unwatch' : '+ Watch'}
+                      </button>
                       <Link to={`/analysis/${s.symbol}`} className="text-[11px] text-accent hover:underline">Analyze</Link>
                     </td>
                   </tr>

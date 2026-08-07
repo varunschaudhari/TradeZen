@@ -10,7 +10,7 @@ import toast from 'react-hot-toast';
 import SignalCard from '../components/SignalCard.jsx';
 import LogTradeModal from '../components/LogTradeModal.jsx';
 import useSocket from '../hooks/useSocket.js';
-import { signalsApi, tradesApi, exportApi } from '../services/api.js';
+import { signalsApi, tradesApi, exportApi, watchlistApi } from '../services/api.js';
 import { SOCKET_EVENTS, VERDICTS } from '../utils/constants.js';
 import { timeAgo } from '../utils/formatters.js';
 
@@ -118,6 +118,27 @@ const Signals = () => {
       toast.error(`Scan failed: ${err.message}`);
     } finally {
       setScanning(false);
+    }
+  }, []);
+
+  /* ── Add/remove watchlist directly from a signal card ──────────────────────── */
+  const handleToggleWatchlist = useCallback(async (signal, currentlyOn) => {
+    try {
+      if (currentlyOn) {
+        await watchlistApi.remove(signal.symbol);
+        toast.success(`${signal.symbol} removed from watchlist`);
+        return false;
+      }
+      await watchlistApi.add(signal.symbol, signal.sector || '');
+      toast.success(`${signal.symbol} added to watchlist`);
+      return true;
+    } catch (err) {
+      if (!currentlyOn && /already/i.test(err.message)) {
+        toast(`${signal.symbol} is already on your watchlist`, { icon: 'ℹ️' });
+        return true;
+      }
+      toast.error(err.message);
+      return null;
     }
   }, []);
 
@@ -370,6 +391,7 @@ const Signals = () => {
               signal={signal}
               accuracy={accuracy[signal.symbol] ?? null}
               onLogTrade={signal.verdict === 'BUY' ? setLogPrefill : undefined}
+              onToggleWatchlist={handleToggleWatchlist}
             />
           ))}
         </div>

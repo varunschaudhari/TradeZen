@@ -57,8 +57,9 @@ const GateRow = ({ name, passed, reason = '', hint }) => (
 );
 GateRow.propTypes = { name: PropTypes.string.isRequired, passed: PropTypes.bool.isRequired, reason: PropTypes.string, hint: PropTypes.string };
 
-const SignalCard = ({ signal, quote = null, onPreview = null, accuracy = null, onLogTrade = null }) => {
+const SignalCard = ({ signal, quote = null, onPreview = null, accuracy = null, onLogTrade = null, onToggleWatchlist = null }) => {
   const [showGates, setShowGates] = useState(false);
+  const [wlState, setWlState] = useState(signal.inWatchlist ? 'added' : 'idle'); // idle | adding | added | removing
   const style      = VERDICT_STYLES[signal.verdict] ?? VERDICT_STYLES.SKIP;
   const isBuy      = signal.verdict === 'BUY';
   const isWait     = signal.verdict === 'WAIT';
@@ -268,6 +269,29 @@ const SignalCard = ({ signal, quote = null, onPreview = null, accuracy = null, o
           <span className="text-slate-500">{timeAgo(signal.createdAt)}</span>
         </div>
         <div className="flex items-center gap-1.5 ml-auto">
+          {onToggleWatchlist && (
+            <button
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (wlState === 'adding' || wlState === 'removing') return;
+                const removing = wlState === 'added';
+                setWlState(removing ? 'removing' : 'adding');
+                const result = await onToggleWatchlist(signal, removing);
+                if (result === true) setWlState('added');
+                else if (result === false) setWlState('idle');
+                else setWlState(removing ? 'added' : 'idle'); // failed — revert
+              }}
+              disabled={wlState === 'adding' || wlState === 'removing'}
+              title={wlState === 'added' ? `Remove ${signal.symbol} from your watchlist` : `Add ${signal.symbol} to your watchlist`}
+              className={`px-2 py-1 rounded text-xs border font-medium transition-colors ${
+                wlState === 'added'
+                  ? 'bg-accent/10 text-accent border-accent/30 hover:bg-bear/10 hover:text-bear hover:border-bear/30'
+                  : 'bg-surface-elevated hover:bg-accent/20 text-slate-300 hover:text-accent border-slate-600/50'
+              } disabled:opacity-60`}
+            >
+              {wlState === 'added' ? '★ Watchlist' : wlState === 'adding' ? 'Adding…' : wlState === 'removing' ? 'Removing…' : '+ Watchlist'}
+            </button>
+          )}
           {isBuy && onLogTrade && (
             <button
               onClick={(e) => { e.stopPropagation(); onLogTrade(signal); }}
@@ -311,6 +335,8 @@ SignalCard.propTypes = {
     reasoning:      PropTypes.string,
     waitCondition:  PropTypes.string,
     createdAt:      PropTypes.string,
+    sector:         PropTypes.string,
+    inWatchlist:    PropTypes.bool,
     myActionability: PropTypes.shape({
       verdict:       PropTypes.string,
       waitCondition: PropTypes.string,
@@ -320,8 +346,9 @@ SignalCard.propTypes = {
     price:     PropTypes.number,
     changePct: PropTypes.number,
   }),
-  onPreview:  PropTypes.func,
-  onLogTrade: PropTypes.func,
+  onPreview:        PropTypes.func,
+  onLogTrade:       PropTypes.func,
+  onToggleWatchlist: PropTypes.func,
   accuracy: PropTypes.shape({
     wins:    PropTypes.number,
     losses:  PropTypes.number,

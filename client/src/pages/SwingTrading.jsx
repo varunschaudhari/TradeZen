@@ -9,11 +9,12 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import PropTypes from 'prop-types';
 import { Link } from 'react-router-dom';
+import toast from 'react-hot-toast';
 import SignalCard from '../components/SignalCard.jsx';
 import StatTile from '../components/StatTile.jsx';
 import LogTradeModal from '../components/LogTradeModal.jsx';
 import useSocket from '../hooks/useSocket.js';
-import { signalsApi, tradesApi, performanceApi } from '../services/api.js';
+import { signalsApi, tradesApi, performanceApi, watchlistApi } from '../services/api.js';
 import { SOCKET_EVENTS } from '../utils/constants.js';
 import { formatCurrency, formatPercent, timeAgo } from '../utils/formatters.js';
 
@@ -134,6 +135,26 @@ const SwingTrading = () => {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [logPrefill, setLogPrefill] = useState(null);
   const { subscribe } = useSocket();
+
+  const handleToggleWatchlist = useCallback(async (signal, currentlyOn) => {
+    try {
+      if (currentlyOn) {
+        await watchlistApi.remove(signal.symbol);
+        toast.success(`${signal.symbol} removed from watchlist`);
+        return false;
+      }
+      await watchlistApi.add(signal.symbol, signal.sector || '');
+      toast.success(`${signal.symbol} added to watchlist`);
+      return true;
+    } catch (err) {
+      if (!currentlyOn && /already/i.test(err.message)) {
+        toast(`${signal.symbol} is already on your watchlist`, { icon: 'ℹ️' });
+        return true;
+      }
+      toast.error(err.message);
+      return null;
+    }
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -360,6 +381,7 @@ const SwingTrading = () => {
               key={signal._id}
               signal={signal}
               onLogTrade={signal.verdict === 'BUY' ? setLogPrefill : undefined}
+              onToggleWatchlist={handleToggleWatchlist}
             />
           ))}
         </div>
