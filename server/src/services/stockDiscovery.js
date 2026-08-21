@@ -39,6 +39,7 @@ import { calculateSimonsSignals, fetchSymbolHistory } from './simonsSignals.js';
 import { runAllGates } from './gateChecker.js';
 import { determineMarketMode } from './marketHealthService.js';
 import { getMarketSignals } from './marketSignals.js';
+import Stock from '../models/Stock.js';
 
 /**
  * Run async `fn` over `items` with a bounded number of concurrent workers.
@@ -70,6 +71,31 @@ async function mapWithConcurrency(items, limit, fn) {
 }
 
 /**
+ * Attach each stock's sector from the Stock master collection (99%+ coverage — synced
+ * from the universe catalog, not from Python's bulk /analyze response, which never
+ * returns sector at all — that only exists on the single-symbol /stock detail schema).
+ * Without this, every downstream consumer of stockData.sector — the Signal document,
+ * evaluated[]'s Stocks-catalog row, and enrichAndGate's sector-rotation check — silently
+ * saw null/undefined forever. Mutates and returns the same array for convenience.
+ *
+ * @param {object[]} stocks - StockAnalysis objects (or anything with a `symbol`)
+ * @returns {Promise<object[]>} same array, each with `.sector` set (null if unknown)
+ */
+async function attachSectors(stocks) {
+  if (!stocks.length) return stocks;
+  try {
+    const rows = await Stock.find({ symbol: { $in: stocks.map((s) => s.symbol) } })
+      .select('symbol sector')
+      .lean();
+    const bySymbol = new Map(rows.map((r) => [r.symbol, r.sector && r.sector !== 'Unknown' ? r.sector : null]));
+    for (const s of stocks) s.sector = bySymbol.get(s.symbol) ?? null;
+  } catch (err) {
+    logger.error('attachSectors failed — proceeding without sector data', { error: err.message });
+  }
+  return stocks;
+}
+
+/**
  * Enrich one analyzed stock with news + Simons signals, then run the 8 gates.
  *
  * @param {object} stockData - StockAnalysis from Python /analyze
@@ -84,6 +110,13 @@ export async function enrichAndGate(stockData, marketData, niftyCloses) {
     fetchSymbolHistory(symbol),
     getNseEarningsOverride(symbol),
   ]);
+  // marketData already carries fiiTrend/pcRatio/topSectors/bottomSectors (from
+  // getMarketSignals() — see scanPipeline.js and evaluateSymbols() above) and stockData
+  // now carries its own sector (attachSectors()) — this was previously discarded by a
+  // hardcoded `external: {}`, silently zeroing out signals 6–9 (sector/FII/P-C) no
+  // matter what data existed. MarketSignals has no populated document yet as of
+  // 2026-08-21, so this doesn't change today's output — it's correct plumbing that
+  // activates automatically the moment that collection gets real data.
   const simons = calculateSimonsSignals({
     indicators: stockData.indicators,
     currentPrice: stockData.currentPrice,
@@ -93,7 +126,12 @@ export async function enrichAndGate(stockData, marketData, niftyCloses) {
     lows: history?.lows,
     volumes: history?.volumes,
     niftyCloses,
-    external: {},
+    external: {
+      stockSector: stockData.sector ?? null,
+      sectorRanking: { topSectors: marketData?.topSectors ?? [], bottomSectors: marketData?.bottomSectors ?? [] },
+      fiiData: marketData?.fiiTrend ? { trend: marketData.fiiTrend } : null,
+      pcRatio: marketData?.pcRatio ?? null,
+    },
   });
   const enriched = { ...stockData, ...simons.enrichment };
   // Gate 3 input: a fresh NSE event-calendar date is authoritative over yfinance's
@@ -205,7 +243,7 @@ export const runStockDiscovery = async (opts = {}) => {
   // Full analysis for survivors
   onProgress.phase?.(`Fetching analysis for ${symbols.length} screened stocks…`);
   const analysis = await analyzeStocks(symbols, capital, riskPct);
-  const valid = (analysis.results ?? []).filter((r) => !r.error);
+  const valid = await attachSectors((analysis.results ?? []).filter((r) => !r.error));
   funnel.analyzed = valid.length;
 
   // Nifty closes power the relative-strength signal — fetch once, share across candidates
@@ -284,6 +322,7 @@ export const evaluateSymbols = async (symbols, opts = {}) => {
     analyzeStocks(symbols, capital, riskPct),
     opts.niftyCloses ? Promise.resolve(opts.niftyCloses) : fetchNiftyHistory(),
   ]);
+  await attachSectors((analysis.results ?? []).filter((r) => !r.error));
 
   const candidates = [];
   for (const stock of analysis.results ?? []) {

@@ -80,6 +80,7 @@ export const SOCKET_EVENTS = Object.freeze({
   SCAN_PROGRESS: 'scan:progress',
   MONITOR_EVENT: 'monitor:event',
   PRICE_ALERT: 'price:alert',
+  BACKTEST_PROGRESS: 'backtest:progress',
 });
 
 export const EXIT_REASONS = Object.freeze({

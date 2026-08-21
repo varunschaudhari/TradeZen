@@ -477,6 +477,6 @@ CSS utility classes in `client/src/index.css`: `.card`, `.badge-buy`, `.badge-wa
 
 - **No authentication.** The API has no auth middleware. Adding JWT is the logical next step.
 - ~~No automatic price refresh~~ — **stale, this exists.** JOB 12 (`position-monitor`, `scheduler/index.js`) calls `refreshOpenPositions()` every 2 minutes during market hours, entirely server-side — gated only on `isMarketOpen()`, independent of `Config.scannerEnabled` and of any browser tab being open.
-- **No backtesting.** No `/api/backtest` route. Historical gate replay is the logical next step.
+- ~~No backtesting~~ — **stale, this exists.** `server/src/services/backtestEngine.js` + `/api/backtest/{setup,run,signal-edge,results}` (`client/src/pages/Backtest.jsx`). Walk-forward replay runs the *exact* live `runAllGates`/`decideVerdict` bar-by-bar (not a simulation of them), mirrors `tradeTracker.js`'s exit logic (next-bar-open fill, T1 half-book, ATR trail replacing the hard T2 close) with a real transaction-cost model, and adds score-bucket calibration + per-signal-flag edge attribution on top. Honest documented limitations: news/earnings gates and VIX/A-D regime can't be replayed historically, and levels are a JS heuristic, not the live Python S/R+Fibonacci engine.
 - **No broker API.** Zero integration with Zerodha, Upstox, or any broker. By design.
 - **No auto-order execution.** See security constraints above. This is a permanent constraint.

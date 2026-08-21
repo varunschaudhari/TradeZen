@@ -185,6 +185,8 @@ export const backtestApi = {
   signalEdge: (data) => api.post('/api/backtest/signal-edge', data, { timeout: 300000 }),
   // Cached results list
   results: (symbol) => api.get('/api/backtest/results', { params: symbol ? { symbol } : {} }),
+  // This user's past walk-forward runs — see if calibration has drifted over time
+  runs: (limit) => api.get('/api/backtest/runs', { params: limit ? { limit } : {} }),
 };
 
 export const exportApi = {

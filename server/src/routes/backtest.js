@@ -5,20 +5,29 @@
  *
  * Routes:
  *   POST /api/backtest/setup        — single setup replay, results cached 30d
- *   POST /api/backtest/run          — walk-forward across symbols/modes
+ *   POST /api/backtest/run          — walk-forward across symbols/modes, persisted
  *   POST /api/backtest/signal-edge  — per-flag edge analysis
  *   GET  /api/backtest/results      — list cached BacktestResult documents
+ *   GET  /api/backtest/runs         — list this user's past walk-forward runs
  */
 
 import express from 'express';
 import Joi from 'joi';
 import { runBacktest, runSignalEdge, backtestSetup } from '../services/backtestEngine.js';
 import BacktestResult from '../models/BacktestResult.js';
+import WalkForwardRun from '../models/WalkForwardRun.js';
 import Config from '../models/Config.js';
 import { logger } from '../config/logger.js';
 import { validateBody } from '../middleware/validateRequest.js';
+import { SOCKET_EVENTS, emitToUser } from '../socket/socketHandlers.js';
 
 const router = express.Router();
+
+// A walk-forward run is one synchronous HTTP request — still bounded even with
+// BACKTEST_CONCURRENCY parallel workers, so this stays a real (if generous) cap, not
+// a full-universe scan. Raised from 30: with symbols processed in parallel instead of
+// sequentially, a much larger watchlist is now actually feasible within the request.
+const MAX_BACKTEST_SYMBOLS = 100;
 
 const SYMBOL_STR = Joi.string().uppercase().pattern(/^[A-Z]{1,20}$/).required();
 
@@ -96,7 +105,7 @@ router.post(
   '/run',
   validateBody(
     Joi.object({
-      symbols:      Joi.array().items(Joi.string().uppercase().pattern(/^[A-Z]{1,20}$/)).max(30).default([]),
+      symbols:      Joi.array().items(Joi.string().uppercase().pattern(/^[A-Z]{1,20}$/)).max(MAX_BACKTEST_SYMBOLS).default([]),
       period:       Joi.string().valid('1y', '2y').default('2y'),
       modes:        Joi.array().items(Joi.string().valid('fixed', 'linear', 'adaptive')).min(1).default(['fixed', 'adaptive']),
       useWatchlist: Joi.boolean().default(false),
@@ -115,7 +124,29 @@ router.post(
         return res.status(400).json({ success: false, error: 'No symbols — add stocks to watchlist or provide symbols array' });
       }
 
-      const result = await runBacktest(symbols, { period, modes });
+      const result = await runBacktest(symbols, {
+        period,
+        modes,
+        onProgress: (completed, total, symbol) =>
+          emitToUser(req.userId, SOCKET_EVENTS.BACKTEST_PROGRESS, { completed, total, symbol, kind: 'run' }),
+      });
+
+      // Persist so the run history (GET /runs) can show whether calibration has
+      // drifted over time — never let a save failure fail the request that already
+      // did the expensive work.
+      try {
+        await WalkForwardRun.create({
+          userId: req.userId,
+          symbols,
+          symbolCount: symbols.length,
+          period,
+          modes,
+          results: result.results,
+        });
+      } catch (saveErr) {
+        logger.error('Backtest run: failed to persist WalkForwardRun', { error: saveErr.message });
+      }
+
       res.json({ success: true, ...result });
     } catch (err) {
       logger.error('Backtest run error', { error: err.message });
@@ -129,7 +160,7 @@ router.post(
   '/signal-edge',
   validateBody(
     Joi.object({
-      symbols:      Joi.array().items(Joi.string().uppercase().pattern(/^[A-Z]{1,20}$/)).max(30).default([]),
+      symbols:      Joi.array().items(Joi.string().uppercase().pattern(/^[A-Z]{1,20}$/)).max(MAX_BACKTEST_SYMBOLS).default([]),
       period:       Joi.string().valid('1y', '2y').default('2y'),
       holdMode:     Joi.string().valid('fixed', 'linear', 'adaptive').default('adaptive'),
       useWatchlist: Joi.boolean().default(false),
@@ -148,7 +179,12 @@ router.post(
         return res.status(400).json({ success: false, error: 'No symbols to analyze' });
       }
 
-      const result = await runSignalEdge(symbols, { period, holdMode });
+      const result = await runSignalEdge(symbols, {
+        period,
+        holdMode,
+        onProgress: (completed, total, symbol) =>
+          emitToUser(req.userId, SOCKET_EVENTS.BACKTEST_PROGRESS, { completed, total, symbol, kind: 'signal-edge' }),
+      });
       res.json({ success: true, ...result });
     } catch (err) {
       logger.error('Signal edge error', { error: err.message });
@@ -168,6 +204,24 @@ router.get('/results', async (req, res) => {
       .select('-trades');
     res.json({ success: true, results });
   } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── GET /api/backtest/runs — this user's past walk-forward runs, newest first ──
+router.get('/runs', async (req, res) => {
+  try {
+    const limit = Math.min(50, parseInt(req.query.limit, 10) || 20);
+    // `results` is keyed by dynamic mode names (fixed/linear/adaptive), so a fixed-path
+    // projection can't selectively drop nested fields — capping the list length is the
+    // simpler lever for keeping this response small.
+    const runs = await WalkForwardRun.find({ userId: req.userId })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    res.json({ success: true, runs });
+  } catch (err) {
+    logger.error('List backtest runs error', { error: err.message });
     res.status(500).json({ success: false, error: err.message });
   }
 });

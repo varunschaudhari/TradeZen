@@ -34,8 +34,10 @@ import {
   ATR_TRAIL_ENABLED,
   ATR_TRAIL_MULT,
   ATR_TRAIL_REPLACES_T2,
+  BACKTEST_CONCURRENCY,
   BACKTEST_COST_STATUTORY_PCT,
   BACKTEST_ENTRY_EMA20_BAND,
+  BACKTEST_FALLBACK_SL_PCT,
   BACKTEST_HOLD_BUFFER,
   BACKTEST_HOLD_DAYS,
   BACKTEST_HOLD_MAX_DAYS,
@@ -45,6 +47,12 @@ import {
   BACKTEST_SLIPPAGE_ATR_MULT,
   BACKTEST_SLIPPAGE_MAX_PCT,
   BACKTEST_SLIPPAGE_MIN_PCT,
+  BACKTEST_SR_CLUSTER_PCT,
+  BACKTEST_SR_LOOKBACK_BARS,
+  BACKTEST_SR_MAX_LEVELS,
+  BACKTEST_SR_SWING_ORDER,
+  BACKTEST_TARGET1_RR,
+  BACKTEST_TARGET2_RR,
   BACKTEST_WARMUP_BARS,
   BB_OVERBOUGHT,
   PROXIMITY_52W_HIGH_PCT,
@@ -58,8 +66,41 @@ import { fetchIndicatorSeries, fetchNiftySeries } from './pythonBridge.js';
 import { calculateSimonsSignals } from './simonsSignals.js';
 import { runAllGates } from './gateChecker.js';
 import { decideVerdict } from './verdictEngine.js';
+import MarketRegimeHistory from '../models/MarketRegimeHistory.js';
 
 const round2 = (n) => (n == null ? null : Math.round(n * 100) / 100);
+
+/**
+ * Run async `fn` over `items` with a bounded number of concurrent workers — mirrors
+ * stockDiscovery.js's own helper of the same shape. yfinance/Python fetches are the
+ * bottleneck per symbol, so this is what turns a sequential 30-symbol run (minutes) into
+ * a parallel one, without opening unbounded concurrent requests at the Python service.
+ * Failed tasks resolve to null and are filtered out — one bad symbol never kills the run.
+ *
+ * @param {any[]} items - Work items
+ * @param {number} limit - Max concurrent workers
+ * @param {(item:any)=>Promise<any>} fn - Async task
+ * @returns {Promise<any[]>} Successful results (nulls removed), NOT necessarily in input order
+ */
+async function mapWithConcurrency(items, limit, fn) {
+  const results = [];
+  let cursor = 0;
+  const workerCount = Math.min(limit, items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (cursor < items.length) {
+      const idx = cursor;
+      cursor += 1;
+      try {
+        results[idx] = await fn(items[idx]);
+      } catch (err) {
+        logger.error('Backtest task failed', { error: err.message });
+        results[idx] = null;
+      }
+    }
+  });
+  await Promise.all(workers);
+  return results.filter(Boolean);
+}
 
 /**
  * EMA over a (possibly null-gapped) array; nulls carry the previous EMA.
@@ -101,7 +142,77 @@ function alignByDate(stockDates, idxDates, idxCloses) {
 }
 
 /**
- * Suggested entry/SL/targets as-of bar t — mirrors Python _compute_trade_levels.
+ * Merge nearby swing-low prices into clusters, same greedy pass as python-service's
+ * _cluster_levels: sort ascending, and merge each price into the first existing cluster
+ * whose running mean it falls within BACKTEST_SR_CLUSTER_PCT of (else start a new one).
+ * Strength = touch count (how many swing lows merged into that cluster).
+ * @param {number[]} prices - raw swing-low prices (unsorted)
+ * @returns {Array<{ price: number, touches: number }>}
+ */
+function clusterSwingLows(prices) {
+  if (!prices.length) return [];
+  const sorted = [...prices].sort((a, b) => a - b);
+  const clusters = [];
+  for (const price of sorted) {
+    let merged = false;
+    for (const cluster of clusters) {
+      const rep = cluster.reduce((s, p) => s + p, 0) / cluster.length;
+      if (rep > 0 && Math.abs(price - rep) / rep < BACKTEST_SR_CLUSTER_PCT) {
+        cluster.push(price);
+        merged = true;
+        break;
+      }
+    }
+    if (!merged) clusters.push([price]);
+  }
+  return clusters.map((c) => ({
+    price: c.reduce((s, p) => s + p, 0) / c.length,
+    touches: c.length,
+  }));
+}
+
+/**
+ * Real swing-low support levels as-of bar t — a JS port of python-service
+ * find_support_resistance()'s support side (scipy argrelextrema local minima +
+ * proximity clustering), restricted to the trailing BACKTEST_SR_LOOKBACK_BARS window
+ * (mirrors OHLCV_PERIOD_DAILY='6mo') and using only bars ≤ t: a low at index i needs
+ * BACKTEST_SR_SWING_ORDER STRICTLY lower bars confirmed on each side (ties don't
+ * count — matches np.less), so the most recent SWING_ORDER bars can never be
+ * confirmed as swing lows yet, exactly like live evaluating "as of today."
+ *
+ * @param {Array<number|null>} lows - full low series
+ * @param {number} t - bar index (inclusive)
+ * @param {number} currentPrice - series.close[t] — live's sort/filter reference price
+ * @returns {Array<{ price: number, touches: number }>} top BACKTEST_SR_MAX_LEVELS
+ *   supports below currentPrice, sorted (-touches, proximity to currentPrice) — same
+ *   order find_support_resistance returns
+ */
+function swingLowSupports(lows, t, currentPrice) {
+  const start = Math.max(0, t - BACKTEST_SR_LOOKBACK_BARS + 1);
+  const order = BACKTEST_SR_SWING_ORDER;
+  const swingLowPrices = [];
+  for (let i = start + order; i <= t - order; i += 1) {
+    const v = lows[i];
+    if (v == null) continue;
+    let isMin = true;
+    for (let k = i - order; k <= i + order; k += 1) {
+      if (k === i) continue;
+      const other = lows[k];
+      if (other == null || other <= v) { isMin = false; break; }
+    }
+    if (isMin) swingLowPrices.push(v);
+  }
+  return clusterSwingLows(swingLowPrices)
+    .filter((c) => c.price < currentPrice)
+    .sort((a, b) => (b.touches - a.touches) || (Math.abs(a.price - currentPrice) - Math.abs(b.price - currentPrice)))
+    .slice(0, BACKTEST_SR_MAX_LEVELS);
+}
+
+/**
+ * Suggested entry/SL/targets as-of bar t — mirrors Python _compute_trade_levels AND
+ * _select_stop_loss exactly: EMA20-pullback entry, then a stop chosen by (1) the
+ * nearest real swing-low support below entry, (2) an ATR-based stop, (3) a flat %
+ * fallback — in that priority order, same as live.
  * @param {object} series - Indicator series
  * @param {number} t - Bar index
  * @returns {{ entry: number, sl: number, t1: number, t2: number }}
@@ -112,19 +223,24 @@ function computeLevels(series, t) {
   const atr = series.atr14[t];
   const entry =
     e20 != null && Math.abs(e20 - price) / price < BACKTEST_ENTRY_EMA20_BAND ? e20 : price;
-  const recentLows = series.low
-    .slice(Math.max(0, t - 19), t + 1)
-    .filter((l) => l != null && l < entry);
-  let sl = recentLows.length
-    ? Math.max(...recentLows)
+
+  const supportsBelowEntry = swingLowSupports(series.low, t, price)
+    .map((c) => c.price)
+    .filter((p) => p < entry);
+
+  let sl = supportsBelowEntry.length
+    ? Math.max(...supportsBelowEntry)
     : atr != null
       ? entry - atr * BACKTEST_SL_ATR_MULT
-      : entry * 0.97;
-  if (sl >= entry) sl = entry * 0.97;
+      : entry * (1 - BACKTEST_FALLBACK_SL_PCT);
+  if (sl >= entry) sl = entry * (1 - BACKTEST_FALLBACK_SL_PCT);
 
   // Floor the stop distance so targets aren't trivially close (the v1 inflation bug):
   // a swing low just under entry made risk tiny → entry+2R/3R got hit automatically.
-  const minRisk = Math.max(atr != null ? atr : 0, entry * 0.03);
+  // Live has no equivalent floor — this stays a deliberate backtest-only safety net,
+  // though now secondary: real clustered swing-low detection (vs. the old "lowest low
+  // in 20 bars" heuristic) makes degenerate tiny-risk stops much rarer on its own.
+  const minRisk = Math.max(atr != null ? atr : 0, entry * BACKTEST_FALLBACK_SL_PCT);
   let risk = entry - sl;
   if (risk < minRisk) {
     risk = minRisk;
@@ -133,8 +249,8 @@ function computeLevels(series, t) {
   return {
     entry: round2(entry),
     sl: round2(sl),
-    t1: round2(entry + 2 * risk),
-    t2: round2(entry + 3 * risk),
+    t1: round2(entry + BACKTEST_TARGET1_RR * risk),
+    t2: round2(entry + BACKTEST_TARGET2_RR * risk),
     risk,
     atr: atr ?? null,
   };
@@ -387,6 +503,27 @@ function simulateTrade(series, signalIdx, levels, holdDays) {
 }
 
 /**
+ * Load the real captured daily regime archive (MarketRegimeHistory) as a date → snapshot
+ * map, so backtestSymbol can replay the ACTUAL classified mode (MIXED/CAUTION included,
+ * not just BULL/BEAR) for any day this has been running, falling back to the
+ * Nifty-vs-its-own-20EMA approximation for days before the archive existed. Collection
+ * grows by one row/day, so fetching it whole is cheap — no date filter needed.
+ *
+ * @returns {Promise<Map<string, { marketMode:string, vix:number|null, adRatio:number|null }>>}
+ */
+async function fetchRegimeMap() {
+  try {
+    const rows = await MarketRegimeHistory.find({}).select('date marketMode vix adRatio').lean();
+    return new Map(rows.map((r) => [r.date, { marketMode: r.marketMode, vix: r.vix ?? null, adRatio: r.adRatio ?? null }]));
+  } catch (err) {
+    logger.warn('Backtest: regime history unavailable — falling back to EMA approximation for all days', {
+      error: err.message,
+    });
+    return new Map();
+  }
+}
+
+/**
  * Backtest one symbol across one or more hold-modes in a SINGLE data pass.
  * The signal (gates + composite) is mode-independent, so it's computed once per bar and
  * only the exit simulation re-runs per mode. Each mode keeps its own no-overlap cursor,
@@ -394,7 +531,7 @@ function simulateTrade(series, signalIdx, levels, holdDays) {
  *
  * @param {string} symbol
  * @param {{ dates: string[], closes: number[] }} niftySeries
- * @param {object} opts - { period, modes: string[] }
+ * @param {object} opts - { period, modes: string[], regimeMap?: Map<string,object> }
  * @returns {Promise<Record<string, object[]>>} mode → trades[]
  */
 async function backtestSymbol(symbol, niftySeries, opts) {
@@ -417,17 +554,20 @@ async function backtestSymbol(symbol, niftySeries, opts) {
     if (!freeModes.length) continue; // every mode is mid-trade here
 
     const { stockData, levels, simons } = buildStockAsOf(symbol, series, t, niftyAligned);
-    // marketMode approximation: gate 1's own bear signal (Nifty vs its 20 EMA) is the only
-    // regime input we can honestly reconstruct historically (no archived VIX/A-D ratio).
+    // Real captured regime (MIXED/CAUTION included) when this day is in the archive
+    // (MarketRegimeHistory, collected going forward from 2026-08-21) — falls back to the
+    // Nifty-vs-its-own-20EMA BULL/BEAR approximation for any day before that archive
+    // existed, which is all every backtest could do until now.
+    const realRegime = opts.regimeMap?.get(series.date[t]) ?? null;
     const market = {
       nifty50: {
         price: niftyAligned[t],
         ema20: niftyEma20[t],
         aboveEma20: niftyAligned[t] > niftyEma20[t],
       },
-      marketMode: niftyAligned[t] > niftyEma20[t] ? 'BULL' : 'BEAR',
-      vix: null,
-      adRatio: null,
+      marketMode: realRegime?.marketMode ?? (niftyAligned[t] > niftyEma20[t] ? 'BULL' : 'BEAR'),
+      vix: realRegime?.vix ?? null,
+      adRatio: realRegime?.adRatio ?? null,
       fiiTrend: 'NEUTRAL',
       pcRatio: null,
     };
@@ -522,6 +662,108 @@ function aggregate(trades) {
 }
 
 /**
+ * Split trades into N contiguous CALENDAR-time windows (not equal trade-count) spanning
+ * the full date range, so each half genuinely represents a different stretch of history —
+ * a busy sub-period can't dominate just because it produced more trades. This is the
+ * backtest's answer to goLiveGate's "one hot fortnight is not evidence": aggregating a
+ * score bucket over the WHOLE window can hide a threshold that only worked because of one
+ * lucky stretch — splitting it exposes that instead of pooling it away.
+ *
+ * @param {object[]} trades - trades carrying a `date` (YYYY-MM-DD string)
+ * @param {number} [n=2] - number of equal-length calendar windows
+ * @returns {Array<{ label: string, from: string, to: string, trades: object[] }>}
+ */
+function splitByPeriod(trades, n = 2) {
+  const dated = trades.filter((t) => t.date);
+  if (!dated.length) return [];
+  const sorted = [...dated].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const firstMs = new Date(sorted[0].date).getTime();
+  const lastMs = new Date(sorted[sorted.length - 1].date).getTime();
+  const span = Math.max(1, lastMs - firstMs);
+
+  const windows = Array.from({ length: n }, (_, i) => ({
+    label: `Period ${i + 1}`,
+    fromMs: firstMs + (span * i) / n,
+    toMs: firstMs + (span * (i + 1)) / n,
+    trades: [],
+  }));
+  for (const t of sorted) {
+    const ms = new Date(t.date).getTime();
+    // Last window is inclusive on both ends; earlier windows exclude their right edge
+    // so a trade lands in exactly one window.
+    const idx = Math.min(n - 1, Math.floor(((ms - firstMs) / span) * n));
+    windows[idx].trades.push(t);
+  }
+  return windows.map((w) => ({
+    label: w.label,
+    from: new Date(w.fromMs).toISOString().slice(0, 10),
+    to: new Date(w.toMs).toISOString().slice(0, 10),
+    trades: w.trades,
+  }));
+}
+
+/**
+ * Flag score buckets whose expectancy sign FLIPS between the first and second calendar
+ * period — the signature of a threshold that was calibrated against one lucky/unlucky
+ * stretch rather than a durable edge. Buckets with too few trades in either period to
+ * mean anything are reported as insufficient rather than unstable (a sign flip on n=2
+ * isn't evidence of instability, it's just noise).
+ *
+ * @param {object[]} periodAggregates - [{ label, byScoreBucket }, ...] from aggregate()
+ * @param {number} [minSample=5] - minimum trades in EACH period for the flip to count
+ * @returns {Array<{ bucket: string, status: 'FLIPPED'|'INSUFFICIENT', periods: object[] }>}
+ */
+function stabilityFlags(periodAggregates, minSample = 5) {
+  if (periodAggregates.length < 2) return [];
+  const bucketKeys = Object.keys(periodAggregates[0]?.byScoreBucket ?? {});
+  const flags = [];
+  for (const key of bucketKeys) {
+    const perPeriod = periodAggregates.map((p) => ({
+      label: p.label,
+      trades: p.byScoreBucket[key]?.trades ?? 0,
+      expectancy: p.byScoreBucket[key]?.expectancy ?? 0,
+    }));
+    const enough = perPeriod.every((p) => p.trades >= minSample);
+    if (!enough) {
+      if (perPeriod.some((p) => p.trades > 0)) {
+        flags.push({ bucket: key, status: 'INSUFFICIENT', periods: perPeriod });
+      }
+      continue;
+    }
+    const signs = perPeriod.map((p) => Math.sign(p.expectancy));
+    const flipped = signs.some((s) => s !== 0) && new Set(signs.filter((s) => s !== 0)).size > 1;
+    if (flipped) flags.push({ bucket: key, status: 'FLIPPED', periods: perPeriod });
+  }
+  return flags;
+}
+
+/**
+ * Cumulative equity curve (in R, net of transaction costs) over a trade list, sorted by
+ * date — the thing a static win-rate/expectancy table can't show: whether the edge
+ * builds up steadily or comes from one or two outsized trades, and how deep the
+ * worst peak-to-trough drawdown ran. Same peak-tracking approach as goLiveGate's
+ * capital drawdown, just in R units instead of ₹ since backtest has no fixed capital.
+ *
+ * @param {object[]} trades - trades carrying { date, rMultiple, costInR }
+ * @returns {{ points: Array<{ date:string, cumR:number, cumRNet:number }>, maxDrawdownR: number }}
+ */
+function computeEquityCurve(trades) {
+  const dated = trades.filter((t) => t.date).sort((a, b) => new Date(a.date) - new Date(b.date));
+  let cumR = 0;
+  let cumRNet = 0;
+  let peak = 0;
+  let maxDrawdownR = 0;
+  const points = dated.map((t) => {
+    cumR += t.rMultiple ?? 0;
+    cumRNet += (t.rMultiple ?? 0) - (t.costInR ?? 0);
+    peak = Math.max(peak, cumRNet);
+    maxDrawdownR = Math.max(maxDrawdownR, peak - cumRNet);
+    return { date: t.date, cumR: round2(cumR), cumRNet: round2(cumRNet) };
+  });
+  return { points, maxDrawdownR: round2(maxDrawdownR) };
+}
+
+/**
  * Per-signal edge: for each signal flag, compare trades WHERE it fired against the rest.
  * `rLift` (avgR with − avgR without) is the marginal edge — positive means the signal
  * adds expectancy, negative means it's dilutive (dragging the composite down).
@@ -564,24 +806,29 @@ function aggregateSignalEdge(trades, minSample = 30) {
  * depends on exits, so we fix the hold mode to the live-like default ('adaptive').
  *
  * @param {string[]} symbols
- * @param {object} [opts] - { period, holdMode='adaptive', minSample }
+ * @param {object} [opts] - { period, holdMode='adaptive', minSample, onProgress?(completed, total, symbol) }
  * @returns {Promise<{ symbols:number, period:string, holdMode:string, trades:number, base:object, signals:object[] }>}
  */
 export const runSignalEdge = async (symbols, opts = {}) => {
   const period = opts.period ?? BACKTEST_PERIOD;
   const holdMode = opts.holdMode ?? 'adaptive';
-  const niftySeries = await fetchNiftySeries(period);
+  const [niftySeries, regimeMap] = await Promise.all([fetchNiftySeries(period), fetchRegimeMap()]);
   if (!niftySeries.dates.length) logger.warn('SignalEdge: no Nifty series — RS/Gate1 degraded');
 
-  const all = [];
-  for (const symbol of symbols) {
+  let completed = 0;
+  const perSymbol = await mapWithConcurrency(symbols, BACKTEST_CONCURRENCY, async (symbol) => {
     try {
-      const res = await backtestSymbol(symbol, niftySeries, { period, modes: [holdMode] });
-      all.push(...res[holdMode]);
+      const res = await backtestSymbol(symbol, niftySeries, { period, modes: [holdMode], regimeMap });
+      return res[holdMode];
     } catch (err) {
       logger.error(`SignalEdge failed for ${symbol}`, { error: err.message });
+      return [];
+    } finally {
+      completed += 1;
+      opts.onProgress?.(completed, symbols.length, symbol);
     }
-  }
+  });
+  const all = perSymbol.flat();
 
   const edge = aggregateSignalEdge(all, opts.minSample);
   logger.info('Signal-edge complete', { symbols: symbols.length, holdMode, trades: all.length });
@@ -601,17 +848,17 @@ export const runSignalEdge = async (symbols, opts = {}) => {
 export const collectBacktestTrades = async (symbols, opts = {}) => {
   const period = opts.period ?? BACKTEST_PERIOD;
   const mode = opts.holdMode ?? 'adaptive';
-  const niftySeries = await fetchNiftySeries(period);
-  const all = [];
-  for (const symbol of symbols) {
+  const [niftySeries, regimeMap] = await Promise.all([fetchNiftySeries(period), fetchRegimeMap()]);
+  const perSymbol = await mapWithConcurrency(symbols, BACKTEST_CONCURRENCY, async (symbol) => {
     try {
-      const res = await backtestSymbol(symbol, niftySeries, { period, modes: [mode] });
-      all.push(...res[mode]);
+      const res = await backtestSymbol(symbol, niftySeries, { period, modes: [mode], regimeMap });
+      return res[mode];
     } catch (err) {
       logger.error(`collectBacktestTrades failed for ${symbol}`, { error: err.message });
+      return [];
     }
-  }
-  return all;
+  });
+  return perSymbol.flat();
 };
 
 /**
@@ -619,33 +866,56 @@ export const collectBacktestTrades = async (symbols, opts = {}) => {
  * in a single data pass (yfinance fetch is the bottleneck, so we fetch each symbol once).
  *
  * @param {string[]} symbols - NSE symbols to backtest
- * @param {object} [opts] - { period, modes: ('fixed'|'linear'|'adaptive')[] }
+ * @param {object} [opts] - { period, modes: ('fixed'|'linear'|'adaptive')[], onProgress?(completed, total, symbol) }
  * @returns {Promise<{ symbols: number, period: string, modes: string[], results: Record<string, object> }>}
  */
 export const runBacktest = async (symbols, opts = {}) => {
   const period = opts.period ?? BACKTEST_PERIOD;
   const modes = opts.modes ?? (opts.holdMode ? [opts.holdMode] : ['fixed']);
-  const niftySeries = await fetchNiftySeries(period);
+  const [niftySeries, regimeMap] = await Promise.all([fetchNiftySeries(period), fetchRegimeMap()]);
   if (!niftySeries.dates.length) logger.warn('Backtest: no Nifty series — RS/Gate1 degraded');
 
   const perMode = Object.fromEntries(modes.map((m) => [m, []]));
-  for (const symbol of symbols) {
+  let completed = 0;
+  await mapWithConcurrency(symbols, BACKTEST_CONCURRENCY, async (symbol) => {
     try {
-      const res = await backtestSymbol(symbol, niftySeries, { period, modes });
+      const res = await backtestSymbol(symbol, niftySeries, { period, modes, regimeMap });
       for (const m of modes) perMode[m].push(...res[m]);
+      return true;
     } catch (err) {
       logger.error(`Backtest failed for ${symbol}`, { error: err.message });
+      return true; // still "handled" — don't let mapWithConcurrency's Boolean filter matter here
+    } finally {
+      completed += 1;
+      opts.onProgress?.(completed, symbols.length, symbol);
     }
-  }
+  });
 
   const results = {};
   for (const m of modes) {
-    results[m] = { trades: perMode[m].length, ...aggregate(perMode[m]), sample: perMode[m].slice(0, 5) };
+    const periods = splitByPeriod(perMode[m], 2).map((p) => ({
+      label: p.label,
+      from: p.from,
+      to: p.to,
+      trades: p.trades.length,
+      ...aggregate(p.trades),
+    }));
+    results[m] = {
+      trades: perMode[m].length,
+      ...aggregate(perMode[m]),
+      sample: perMode[m].slice(0, 5),
+      periods,
+      stability: stabilityFlags(periods),
+      equityCurve: computeEquityCurve(perMode[m]),
+    };
   }
   logger.info('Backtest complete', {
     symbols: symbols.length,
     modes,
     overall: Object.fromEntries(modes.map((m) => [m, results[m].overall])),
+    unstableBuckets: Object.fromEntries(
+      modes.map((m) => [m, results[m].stability.filter((s) => s.status === 'FLIPPED').map((s) => s.bucket)])
+    ),
   });
   return { symbols: symbols.length, period, modes, results };
 };

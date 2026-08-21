@@ -16,6 +16,7 @@
 
 import mongoose from 'mongoose';
 import MarketState from '../models/MarketState.js';
+import MarketRegimeHistory from '../models/MarketRegimeHistory.js';
 import { logger } from '../config/logger.js';
 import { fetchMarketData } from './pythonBridge.js';
 import { sendBearModeAlert } from './notifier.js';
@@ -32,6 +33,11 @@ import {
 } from '../config/constants.js';
 
 const MS_PER_MIN = 60_000;
+
+// The only correct way to get current IST time in this codebase (see CLAUDE.md).
+function getNowIST() {
+  return new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+}
 
 /**
  * Classify a simple price-vs-EMA trend label.
@@ -181,6 +187,32 @@ async function persistHealth(health) {
     );
   } catch (err) {
     logger.error('marketHealth: failed to persist snapshot', { error: err.message });
+  }
+
+  // Daily regime archive — upserted by IST calendar day so later scan cycles the same
+  // day just refine that day's row with the latest snapshot. This is what lets
+  // backtestEngine.js eventually replay real MIXED/CAUTION regimes for any day going
+  // forward, instead of only ever approximating from Nifty-vs-its-own-20EMA.
+  try {
+    const date = getNowIST().toISOString().slice(0, 10);
+    await MarketRegimeHistory.updateOne(
+      { date },
+      {
+        $set: {
+          niftyPrice: health.nifty50.price,
+          niftyEma20: health.nifty50.ema20,
+          vix: health.vix,
+          adRatio: health.adRatio,
+          marketMode: health.marketMode,
+          allowTrading: health.allowTrading,
+          reason: health.reason,
+          capturedAt: new Date(),
+        },
+      },
+      { upsert: true }
+    );
+  } catch (err) {
+    logger.error('marketHealth: failed to persist daily regime history', { error: err.message });
   }
 }
 

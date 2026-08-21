@@ -429,11 +429,26 @@ export const SCAN_CLAUDE_CONCURRENCY = Math.max(
 export const SCAN_RESULT_TTL_SECONDS = 14 * 24 * 60 * 60; // keep scan snapshots 14 days
 
 // Backtesting (Flow — backtestEngine.js)
+export const BACKTEST_CONCURRENCY = 6; // parallel per-symbol workers — mirrors DISCOVERY_CONCURRENCY
 export const BACKTEST_PERIOD = '2y'; // history window pulled per symbol
 export const BACKTEST_WARMUP_BARS = 200; // skip until EMA200 + RS lookbacks are valid
 export const BACKTEST_HOLD_DAYS = 10; // fixed-mode: max bars held before a time-based exit
-export const BACKTEST_SL_ATR_MULT = 1.5; // fallback stop = entry − ATR×mult
-export const BACKTEST_ENTRY_EMA20_BAND = 0.05; // use EMA20 as entry if within 5% of price
+export const BACKTEST_SL_ATR_MULT = 1.5; // fallback stop = entry − ATR×mult — mirrors python-service SL_ATR_MULTIPLIER
+export const BACKTEST_ENTRY_EMA20_BAND = 0.05; // use EMA20 as entry if within 5% of price — mirrors ENTRY_EMA20_BAND_PCT
+export const BACKTEST_FALLBACK_SL_PCT = 0.03; // last-resort stop when no support/ATR — mirrors FALLBACK_SL_PCT
+export const BACKTEST_TARGET1_RR = 2; // mirrors python-service TARGET1_RR
+export const BACKTEST_TARGET2_RR = 3; // mirrors python-service TARGET2_RR
+
+// Swing-low support detection for the backtest's stop-loss choice — a JS port of
+// python-service find_support_resistance()'s support side (scipy argrelextrema local
+// minima + proximity clustering), so the backtest picks stops the same way live
+// signals do instead of a naive "lowest low in N bars". Mirrors SWING_ORDER,
+// CLUSTER_PCT, MAX_SR_LEVELS, and OHLCV_PERIOD_DAILY='6mo' (~126 trading days) in
+// python-service/app/config.py exactly — keep these two files in sync if either changes.
+export const BACKTEST_SR_SWING_ORDER = 5; // bars required strictly-lower on each side to count as a swing low
+export const BACKTEST_SR_CLUSTER_PCT = 0.015; // merge swing lows within 1.5% of each other
+export const BACKTEST_SR_MAX_LEVELS = 3; // keep only the top-3 by strength/proximity, like live
+export const BACKTEST_SR_LOOKBACK_BARS = 126; // ~6 months of trading days — mirrors live's rolling OHLCV window
 
 // ATR-adaptive hold window (Flow — backtestEngine.js, holdMode='adaptive'|'linear')
 // Sizes the time-stop to each trade's velocity instead of a flat 10 bars.

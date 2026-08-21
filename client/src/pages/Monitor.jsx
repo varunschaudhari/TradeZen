@@ -1,24 +1,26 @@
 /**
  * @file Monitor.jsx
- * @description Scan & database monitoring dashboard. Consolidates 10 views:
- *   (1) stock inventory + scan status, (2) live scan progress, (3) scan history,
- *   (4) database statistics, (5) data health check, (6) scan scheduler & controls,
- *   (7) alerts/events feed, (8) sector-wise scan status, (9) signal-generation
- *   analytics, (10) scanning-performance insights. Live-updates over WebSocket.
+ * @description "Is the scanner alive and healthy right now" dashboard — live operational
+ *   status only: (1) scan scheduler & controls, (2) live scan progress, (3) database
+ *   statistics, (4) scan-performance analytics, (5) data health check, (6) decision
+ *   calibration, (7) sector-wise scan status, (8) alerts/events feed. Live-updates over
+ *   WebSocket. Score reachability, the full stock inventory grid, and scan history moved
+ *   to ScanResults.jsx (2026-08) — that page now owns everything about what a scan found;
+ *   this one owns whether the engine itself is running and well.
  * @author TradeZen Team
  * @created 2026-06-27
+ * @lastModified 2026-08-21
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import PropTypes from 'prop-types';
 import useSocket from '../hooks/useSocket.js';
 import useScanProgress from '../hooks/useScanProgress.js';
-import { monitorApi, scanApi } from '../services/api.js';
-import { SOCKET_EVENTS, MARKET_MODE_COLORS, SCAN_STAGE_STYLES } from '../utils/constants.js';
-import { timeAgo, formatDateTime } from '../utils/formatters.js';
+import { monitorApi } from '../services/api.js';
+import { SOCKET_EVENTS } from '../utils/constants.js';
+import { timeAgo } from '../utils/formatters.js';
 
-const fmtPrice = (n) => (n == null ? '—' : `₹${Number(n).toLocaleString('en-IN')}`);
 const fmtDur = (ms) => (ms == null ? '—' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`);
 const fmtEta = (ms) => {
   if (ms == null) return '—';
@@ -141,121 +143,6 @@ const ScanProgressBar = ({ progress }) => {
 };
 ScanProgressBar.propTypes = { progress: PropTypes.object };
 
-/* ── Feature 1: Stock inventory ───────────────────────────────────────────────── */
-const StageBadge = ({ stage }) =>
-  stage ? (
-    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium border ${SCAN_STAGE_STYLES[stage] ?? 'bg-slate-700/40 text-slate-300 border-slate-600'}`}>
-      {stage}
-    </span>
-  ) : (
-    <span className="text-[10px] text-slate-600">not scanned</span>
-  );
-StageBadge.propTypes = { stage: PropTypes.string };
-
-const InventoryTable = ({ inventory }) => {
-  const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState('ALL'); // ALL | SCANNED | NOT_SCANNED | WATCHLIST | SIGNALS
-
-  const rows = useMemo(() => {
-    const q = query.trim().toUpperCase();
-    return (inventory?.stocks ?? []).filter((s) => {
-      if (q && !s.symbol.includes(q)) return false;
-      if (filter === 'SCANNED') return s.scanned;
-      if (filter === 'NOT_SCANNED') return !s.scanned;
-      if (filter === 'WATCHLIST') return s.inWatchlist;
-      if (filter === 'SIGNALS') return !!s.signal;
-      return true;
-    });
-  }, [inventory, query, filter]);
-
-  const filters = ['ALL', 'SCANNED', 'NOT_SCANNED', 'WATCHLIST', 'SIGNALS'];
-
-  return (
-    <Card
-      title={`Stock Inventory (${inventory?.total ?? 0})`}
-      action={
-        <span className="text-[11px] text-slate-500">
-          {inventory?.scannedCount ?? 0} scanned · {inventory?.notScannedCount ?? 0} pending
-        </span>
-      }
-    >
-      <div className="flex flex-wrap items-center gap-2 mb-3">
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search symbol…"
-          className="input text-xs py-1 px-2 w-40"
-        />
-        <div className="flex flex-wrap gap-1.5 ml-auto">
-          {filters.map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`text-[11px] px-2 py-0.5 rounded border transition-colors ${
-                filter === f
-                  ? 'bg-accent text-white border-accent'
-                  : 'bg-surface-card text-slate-400 border-slate-700 hover:text-slate-200'
-              }`}
-            >
-              {f.replace('_', ' ')}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="overflow-x-auto max-h-[28rem] overflow-y-auto">
-        <table className="w-full text-sm min-w-[640px]">
-          <thead className="sticky top-0 bg-surface-card">
-            <tr className="text-left text-[11px] text-slate-500 border-b border-slate-700">
-              <th className="pb-2 pr-3">Symbol</th>
-              <th className="pb-2 pr-3">Sector</th>
-              <th className="pb-2 pr-3 text-right">Price</th>
-              <th className="pb-2 pr-3 text-right">Gates</th>
-              <th className="pb-2 pr-3 text-right">Score</th>
-              <th className="pb-2 pr-3">Stage</th>
-              <th className="pb-2 pr-3">Signal</th>
-              <th className="pb-2"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((s) => (
-              <tr key={s.symbol} className="border-b border-slate-800 last:border-0 hover:bg-surface-elevated/30">
-                <td className="py-1.5 pr-3 font-medium text-slate-200">
-                  {s.symbol}
-                  {s.inWatchlist && <span className="ml-1 text-[9px] text-accent" title="In watchlist">★</span>}
-                </td>
-                <td className="py-1.5 pr-3 text-slate-400 text-xs">{s.sector}</td>
-                <td className="py-1.5 pr-3 text-right font-mono text-slate-300">{fmtPrice(s.currentPrice)}</td>
-                <td className="py-1.5 pr-3 text-right font-mono text-slate-300">
-                  {s.gatesPassed == null ? '—' : `${s.gatesPassed}/8`}
-                </td>
-                <td className="py-1.5 pr-3 text-right font-mono text-slate-300">{s.compositeScore ?? '—'}</td>
-                <td className="py-1.5 pr-3"><StageBadge stage={s.droppedAtStage} /></td>
-                <td className="py-1.5 pr-3">
-                  {s.signal ? (
-                    <span className={`text-xs font-semibold badge-${s.signal.verdict?.toLowerCase()}`}>
-                      {s.signal.verdict}
-                    </span>
-                  ) : (
-                    <span className="text-slate-600 text-xs">—</span>
-                  )}
-                </td>
-                <td className="py-1.5 text-right">
-                  <Link to={`/analysis/${s.symbol}`} className="text-[11px] text-accent hover:underline">Analyze</Link>
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && (
-              <tr><td colSpan={8} className="py-6 text-center text-slate-500 text-sm">No stocks match.</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </Card>
-  );
-};
-InventoryTable.propTypes = { inventory: PropTypes.object };
-
 /* ── Feature 8: Sector status ─────────────────────────────────────────────────── */
 const SectorStatus = ({ sectors }) => {
   const max = Math.max(1, ...(sectors ?? []).map((s) => s.scanned));
@@ -324,7 +211,7 @@ const AnalyticsCard = ({ analytics }) => {
   if (!analytics?.available) {
     return <Card title="Signal & Scan Analytics"><p className="text-slate-500 text-sm">{analytics?.message ?? 'No data yet'}</p></Card>;
   }
-  const { signalGen, performance, topDropReasons } = analytics;
+  const { signalGen, performance } = analytics;
   return (
     <Card title={`Analytics (last ${analytics.window} scans)`}>
       <div className="grid grid-cols-3 gap-2 mb-3">
@@ -335,72 +222,16 @@ const AnalyticsCard = ({ analytics }) => {
         <Stat label="Fastest" value={fmtDur(performance.fastestMs)} color="text-bull" />
         <Stat label="Slowest" value={fmtDur(performance.slowestMs)} color="text-wait" />
       </div>
-      <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+      <div className="flex items-center justify-between text-xs text-slate-400">
         <span>Verdict cost (window): <span className="text-slate-200 font-mono">₹{performance.totalCostInr}</span> <span className="text-slate-600">(deterministic verdicts are free)</span></span>
       </div>
-      {topDropReasons?.length > 0 && (
-        <div className="border-t border-slate-700/60 pt-2">
-          <p className="text-[11px] text-slate-500 mb-1.5">Top screen-rejection reasons</p>
-          <div className="flex flex-wrap gap-1.5">
-            {topDropReasons.map((r) => (
-              <span key={r.reason} className="text-[11px] px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400">
-                {r.reason}: <span className="text-slate-200 font-mono">{r.count}</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
+      <p className="text-[11px] text-slate-600 mt-2">
+        Screen-rejection trend moved to <Link to="/scan" className="underline hover:text-slate-400">Scan Results</Link>.
+      </p>
     </Card>
   );
 };
 AnalyticsCard.propTypes = { analytics: PropTypes.object };
-
-/* ── Score reachability: how close does the latest scan get to a real BUY? ───────
- * The verdict engine only BUYs at score-confidence HIGH (≥60) — this makes a
- * persistently-empty 60+ band visible per-scan instead of discovered days later. */
-const SCORE_BUCKET_COLOR = { '<50': 'text-slate-500', '50-59': 'text-wait', '60-69': 'text-bull', '70+': 'text-buy' };
-const ScoreDistributionCard = ({ dist }) => {
-  if (!dist?.available) {
-    return (
-      <Card title="Score Reachability (latest scan)">
-        <p className="text-slate-500 text-sm">No gate-qualified stocks in the latest scan yet.</p>
-      </Card>
-    );
-  }
-  const { byScoreBucket, byVerdict, qualifiedCount, topScores } = dist;
-  return (
-    <Card title="Score Reachability (latest scan)">
-      <div className="grid grid-cols-4 gap-2 mb-3">
-        {Object.entries(byScoreBucket).map(([bucket, count]) => (
-          <Stat key={bucket} label={bucket} value={count} color={SCORE_BUCKET_COLOR[bucket]} />
-        ))}
-      </div>
-      <div className="flex items-center gap-3 text-xs text-slate-400 mb-3">
-        <span>{qualifiedCount} gate-qualified →</span>
-        <span className="text-buy font-mono">{byVerdict.BUY} BUY</span>
-        <span className="text-wait font-mono">{byVerdict.WAIT} WAIT</span>
-        <span className="text-slate-500 font-mono">{byVerdict.SKIP} SKIP</span>
-        {byVerdict.BUY === 0 && qualifiedCount > 0 && (
-          <span className="text-wait">— no score reached the HIGH band this scan</span>
-        )}
-      </div>
-      {topScores?.length > 0 && (
-        <div className="border-t border-slate-700/60 pt-2">
-          <p className="text-[11px] text-slate-500 mb-1.5">Top scores this scan</p>
-          <div className="flex flex-wrap gap-1.5">
-            {topScores.map((s) => (
-              <span key={s.symbol} className="text-[11px] px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400">
-                {s.symbol}: <span className="text-slate-200 font-mono">{s.score}</span>
-                <span className={s.verdict === 'BUY' ? 'text-buy' : s.verdict === 'WAIT' ? 'text-wait' : 'text-slate-500'}> {s.verdict}</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-    </Card>
-  );
-};
-ScoreDistributionCard.propTypes = { dist: PropTypes.object };
 
 /* ── Feature 7: Events feed ───────────────────────────────────────────────────── */
 const EventsFeed = ({ events }) => (
@@ -424,43 +255,6 @@ const EventsFeed = ({ events }) => (
   </Card>
 );
 EventsFeed.propTypes = { events: PropTypes.array };
-
-/* ── Feature 3: Scan history ──────────────────────────────────────────────────── */
-const ScanHistory = ({ history }) => (
-  <Card title="Scan History">
-    <div className="overflow-x-auto max-h-80 overflow-y-auto">
-      <table className="w-full text-xs min-w-[420px]">
-        <thead className="sticky top-0 bg-surface-card">
-          <tr className="text-left text-[11px] text-slate-500 border-b border-slate-700">
-            <th className="pb-2 pr-3">When</th>
-            <th className="pb-2 pr-3">Mode</th>
-            <th className="pb-2 pr-3 text-right">Analyzed</th>
-            <th className="pb-2 pr-3 text-right">Signals</th>
-            <th className="pb-2 pr-3 text-right">BUY</th>
-            <th className="pb-2 text-right">Duration</th>
-          </tr>
-        </thead>
-        <tbody>
-          {history?.length ? (
-            history.map((s) => (
-              <tr key={s._id} className="border-b border-slate-800 last:border-0">
-                <td className="py-1.5 pr-3 text-slate-300" title={formatDateTime(s.createdAt)}>{timeAgo(s.createdAt)}</td>
-                <td className={`py-1.5 pr-3 font-medium ${MARKET_MODE_COLORS[s.marketMode] ?? 'text-slate-400'}`}>{s.marketMode ?? '—'}</td>
-                <td className="py-1.5 pr-3 text-right font-mono text-slate-300">{s.funnel?.analyzed ?? '—'}</td>
-                <td className="py-1.5 pr-3 text-right font-mono text-slate-300">{s.signalsSaved ?? 0}</td>
-                <td className="py-1.5 pr-3 text-right font-mono text-buy">{s.buySignals ?? 0}</td>
-                <td className="py-1.5 text-right font-mono text-slate-400">{fmtDur(s.durationMs)}</td>
-              </tr>
-            ))
-          ) : (
-            <tr><td colSpan={6} className="py-6 text-center text-slate-500">No scans yet.</td></tr>
-          )}
-        </tbody>
-      </table>
-    </div>
-  </Card>
-);
-ScanHistory.propTypes = { history: PropTypes.array };
 
 /* ── Decision calibration — is the score/confidence actually predictive? ───────── */
 const CAL_VERDICT = {
@@ -592,8 +386,6 @@ const Monitor = () => {
   const { subscribe } = useSocket();
   const { progress, events } = useScanProgress();
   const [overview, setOverview] = useState(null);
-  const [inventory, setInventory] = useState(null);
-  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [scanning, setScanning] = useState(false);
@@ -619,14 +411,8 @@ const Monitor = () => {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [ov, inv, hist] = await Promise.all([
-        monitorApi.getOverview(),
-        monitorApi.getInventory(),
-        scanApi.getHistory(),
-      ]);
+      const ov = await monitorApi.getOverview();
       setOverview(ov.data ?? null);
-      setInventory(inv.data ?? null);
-      setHistory(hist.data ?? []);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -736,8 +522,6 @@ const Monitor = () => {
             </Card>
           )}
 
-          <ScoreDistributionCard dist={overview?.scoreDistribution} />
-
           {/* Analytics + Health (Features 9, 10, 5) */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <AnalyticsCard analytics={overview?.analytics} />
@@ -750,14 +534,8 @@ const Monitor = () => {
           {/* Sector status (Feature 8) */}
           <SectorStatus sectors={overview?.sectors} />
 
-          {/* Inventory (Feature 1) */}
-          <InventoryTable inventory={inventory} />
-
-          {/* History + Events (Features 3, 7) */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <ScanHistory history={history} />
-            <EventsFeed events={events} />
-          </div>
+          {/* Events (Feature 7) */}
+          <EventsFeed events={events} />
         </>
       )}
     </div>

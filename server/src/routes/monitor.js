@@ -268,11 +268,19 @@ function buildHealth(history, latest) {
 }
 
 // ── Feature 8: Sector-wise scan status ──────────────────────────────────────────
-function buildSectors(latest, sectorOf) {
+// Diagnosed 2026-08-04: this used to fall straight to sectorOf() (watchlist, then a
+// ~20-symbol hardcoded STATIC_SECTORS map, else 'Unknown') — fine when the universe
+// was small, but it never consulted the Stock master's own `sector` field, so once
+// the EXTENDED tier populated real sectors for thousands of stocks, this widget kept
+// bucketing almost all of them under one giant 'Unknown' group regardless. Same fix
+// already applied in /catalog's row-building: prefer the stored sector, fall back to
+// sectorOf() only when the Stock record itself has none.
+function buildSectors(latest, sectorOf, stockSectorBy) {
   const stocks = latest?.stocks ?? [];
   const groups = {};
   for (const s of stocks) {
-    const sector = sectorOf(s.symbol);
+    const stored = stockSectorBy?.[s.symbol];
+    const sector = (stored && stored !== 'Unknown') ? stored : sectorOf(s.symbol);
     if (!groups[sector]) groups[sector] = { sector, scanned: 0, signals: 0, gatePassed: 0, analyzed: 0 };
     groups[sector].scanned += 1;
     if (s.verdict === 'BUY' || s.verdict === 'WAIT') groups[sector].signals += 1;
@@ -309,7 +317,7 @@ function buildScanner(config, latest, marketState) {
 // ── GET /api/monitor/overview ────────────────────────────────────────────────────
 router.get('/overview', async (req, res, next) => {
   try {
-    const [config, marketState, latest, history] = await Promise.all([
+    const [config, marketState, latest, history, stockSectors] = await Promise.all([
       Config.findOne({ userId: req.userId }).lean(),
       MarketState.findOne().select('marketMode lastMarketHealth').lean(),
       ScanResult.findOne({ scanType: 'LIVE' }).sort({ createdAt: -1 }).lean(),
@@ -318,8 +326,11 @@ router.get('/overview', async (req, res, next) => {
         .limit(HISTORY_WINDOW)
         .select('-stocks -watchlist')
         .lean(),
+      Stock.find({}, { symbol: 1, sector: 1 }).lean(),
     ]);
     const sectorOf = buildSectorLookup(config?.watchlist);
+    const stockSectorBy = {};
+    for (const s of stockSectors) stockSectorBy[s.symbol] = s.sector;
 
     const [stats, goLiveGate] = await Promise.all([
       buildStats(config, latest, req.userId),
@@ -333,7 +344,7 @@ router.get('/overview', async (req, res, next) => {
         analytics: buildAnalytics(history, latest),
         scoreDistribution: buildScoreDistribution(latest),
         health: buildHealth(history, latest),
-        sectors: buildSectors(latest, sectorOf),
+        sectors: buildSectors(latest, sectorOf, stockSectorBy),
         scanner: buildScanner(config, latest, marketState),
         goLiveGate,
         progress: getScanState(),

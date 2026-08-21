@@ -8,8 +8,14 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import {
+  LineChart, Line, XAxis, YAxis,
+  CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
+} from 'recharts';
 import { backtestApi, signalsApi } from '../services/api.js';
-import { formatCurrency } from '../utils/formatters.js';
+import { formatCurrency, timeAgo } from '../utils/formatters.js';
+import { SOCKET_EVENTS } from '../utils/constants.js';
+import useSocket from '../hooks/useSocket.js';
 import Spinner from '../components/Spinner.jsx';
 
 /* ── Small helpers ────────────────────────────────────────────────────── */
@@ -372,6 +378,186 @@ const BucketTable = ({ results, modes }) => {
   );
 };
 
+/** Cumulative R equity curve — shows whether the edge builds up steadily or comes
+ * from one or two outsized trades, and how deep the worst drawdown ran. A static
+ * win-rate/expectancy table can't show either of those. */
+const EquityCurveTooltip = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null;
+  const net = payload.find((p) => p.dataKey === 'cumRNet')?.value;
+  const gross = payload.find((p) => p.dataKey === 'cumR')?.value;
+  return (
+    <div className="bg-surface-card border border-slate-600 rounded-lg px-3 py-2 text-xs shadow-xl space-y-0.5">
+      <p className="text-slate-400 mb-1">{label}</p>
+      <p className={`font-mono font-semibold ${net >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>net {fmtR(net)}</p>
+      <p className="font-mono text-slate-500">gross {fmtR(gross)}</p>
+    </div>
+  );
+};
+
+const EquityCurveChart = ({ results, modes }) => {
+  const refMode = modes?.includes('adaptive') ? 'adaptive' : modes?.[0];
+  const curve = results?.[refMode]?.equityCurve;
+  if (!curve?.points?.length) return null;
+
+  return (
+    <div>
+      <div className="flex items-baseline gap-2 mb-1">
+        <h3 className="text-sm font-semibold text-slate-200">Equity Curve</h3>
+        <span className="text-xs text-slate-500">({refMode} mode) — cumulative R over time</span>
+      </div>
+      <p className="text-xs text-slate-500 mb-3">
+        Max drawdown <span className="font-mono text-red-400">{fmtR(-Math.abs(curve.maxDrawdownR))}</span> peak-to-trough
+      </p>
+      <ResponsiveContainer width="100%" height={220}>
+        <LineChart data={curve.points} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.4} />
+          <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#64748b' }} minTickGap={30} />
+          <YAxis tick={{ fontSize: 10, fill: '#64748b' }} width={40} />
+          <ReferenceLine y={0} stroke="#475569" />
+          <Tooltip content={<EquityCurveTooltip />} />
+          <Line type="monotone" dataKey="cumR" stroke="#475569" strokeWidth={1.5} dot={false} strokeDasharray="4 3" />
+          <Line type="monotone" dataKey="cumRNet" stroke="#34d399" strokeWidth={2} dot={false} />
+        </LineChart>
+      </ResponsiveContainer>
+      <p className="text-[10px] text-slate-600 mt-1">
+        Solid green = net of transaction costs · dashed grey = gross
+      </p>
+    </div>
+  );
+};
+
+/** Longitudinal comparison — has the score-threshold calibration drifted since last
+ * time this was run? Without this, every run is a fresh snapshot with nothing to
+ * compare against. */
+const PastRunsPanel = ({ runs }) => {
+  if (!runs?.length) return null;
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-slate-200 mb-3">Past Runs</h3>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[520px]">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-700/60">
+              <th className="text-left pb-2 pr-4">When</th>
+              <th className="text-right pb-2 pr-4">Symbols</th>
+              <th className="text-left pb-2 pr-4">Modes</th>
+              <th className="text-right pb-2 pr-4">Trades</th>
+              <th className="text-right pb-2 pr-4">Win %</th>
+              <th className="text-right pb-2">Expectancy</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-700/25">
+            {runs.map((r) => {
+              const refMode = r.modes?.includes('adaptive') ? 'adaptive' : r.modes?.[0];
+              const o = r.results?.[refMode]?.overall ?? {};
+              return (
+                <tr key={r._id} className="hover:bg-surface-elevated/20 transition-colors">
+                  <td className="py-2 pr-4 text-slate-400">{timeAgo(r.createdAt)}</td>
+                  <td className="py-2 pr-4 text-right font-mono text-slate-300">{r.symbolCount}</td>
+                  <td className="py-2 pr-4 font-mono text-slate-400">{r.modes?.join(', ')}</td>
+                  <td className="py-2 pr-4 text-right font-mono text-slate-400">{o.trades ?? '—'}</td>
+                  <td className={`py-2 pr-4 text-right font-mono ${(o.winRate ?? 0) >= 55 ? 'text-emerald-400' : 'text-slate-300'}`}>
+                    {o.trades ? fmtPct(o.winRate) : '—'}
+                  </td>
+                  <td className={`py-2 text-right font-mono font-semibold ${(o.expectancy ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {o.trades ? fmtR(o.expectancy) : '—'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[10px] text-slate-600 mt-2">
+        Reference mode per run: adaptive if included, else the first mode that run used.
+      </p>
+    </div>
+  );
+};
+
+/** Split-window overfitting guard: does a score bucket's edge hold up in BOTH
+ * calendar halves, or did it only look good because of one lucky/unlucky stretch?
+ * Mirrors goLiveGate's "one hot fortnight is not evidence" philosophy for the backtest's
+ * own score-threshold calibration. */
+const StabilityPanel = ({ results, modes }) => {
+  const refMode = modes?.includes('adaptive') ? 'adaptive' : modes?.[0];
+  const periods = results?.[refMode]?.periods ?? [];
+  const stability = results?.[refMode]?.stability ?? [];
+  const buckets = SCORE_BUCKETS;
+  if (periods.length < 2) return null;
+
+  const flagFor = (bucket) => stability.find((s) => s.bucket === bucket);
+
+  return (
+    <div>
+      <div className="flex items-baseline gap-2 mb-1">
+        <h3 className="text-sm font-semibold text-slate-200">Stability Check</h3>
+        <span className="text-xs text-slate-500">({refMode} mode) — same score bucket, two calendar halves</span>
+      </div>
+      <p className="text-xs text-slate-500 mb-3">
+        {periods.map((p) => `${p.label}: ${p.from} → ${p.to} (${p.trades} trades)`).join('  ·  ')}
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[520px]">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-700/60">
+              <th className="text-left pb-2 pr-4">Score</th>
+              {periods.map((p) => (
+                <React.Fragment key={p.label}>
+                  <th className="text-right pb-2 pr-3">{p.label} Win%</th>
+                  <th className="text-right pb-2 pr-4">{p.label} Exp.</th>
+                </React.Fragment>
+              ))}
+              <th className="text-left pb-2">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-700/25">
+            {buckets.map((k) => {
+              const flag = flagFor(k);
+              const rowCls = flag?.status === 'FLIPPED' ? 'bg-red-500/5' : '';
+              return (
+                <tr key={k} className={`transition-colors ${rowCls}`}>
+                  <td className="py-2 pr-4 font-mono text-slate-200">{k}</td>
+                  {periods.map((p) => {
+                    const b = p.byScoreBucket?.[k] ?? { trades: 0, winRate: 0, expectancy: 0 };
+                    return (
+                      <React.Fragment key={p.label}>
+                        <td className="py-2 pr-3 text-right font-mono text-slate-400">
+                          {b.trades ? fmtPct(b.winRate) : '—'}
+                        </td>
+                        <td className={`py-2 pr-4 text-right font-mono ${b.expectancy > 0 ? 'text-emerald-400/80' : b.expectancy < 0 ? 'text-red-400/80' : 'text-slate-500'}`}>
+                          {b.trades ? fmtR(b.expectancy) : '—'}
+                        </td>
+                      </React.Fragment>
+                    );
+                  })}
+                  <td className="py-2 text-left">
+                    {flag?.status === 'FLIPPED' && (
+                      <span className="chip bg-red-500/20 text-red-400" title="Expectancy sign flips between periods — don't trust this bucket's edge yet">
+                        ⚠ sign flip
+                      </span>
+                    )}
+                    {flag?.status === 'INSUFFICIENT' && (
+                      <span className="chip bg-slate-700/50 text-slate-500" title="Too few trades in one or both periods to judge stability">
+                        low n
+                      </span>
+                    )}
+                    {!flag && <span className="text-slate-600 text-xs">stable</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[10px] text-slate-600 mt-2">
+        A bucket only counts as stable if its expectancy has the SAME sign in both halves with ≥5 trades each.
+        "Sign flip" means the edge only showed up in one stretch of history — treat it as unproven, not a real edge yet.
+      </p>
+    </div>
+  );
+};
+
 const SignalEdgeTable = ({ result }) => {
   if (!result) return null;
   const { base, signals } = result;
@@ -464,15 +650,33 @@ export default function Backtest() {
   const [wfResult,   setWfResult]   = useState(null);
   const [wfError,    setWfError]    = useState(null);
   const [wfElapsed,  setWfElapsed]  = useState(0);
+  const [wfProgress, setWfProgress] = useState(null); // { completed, total, symbol } | null
 
   /* ── Signal Edge state ── */
   const [edgeLoading, setEdgeLoading] = useState(false);
   const [edgeResult,  setEdgeResult]  = useState(null);
   const [edgeError,   setEdgeError]   = useState(null);
   const [edgeElapsed, setEdgeElapsed] = useState(0);
+  const [edgeProgress, setEdgeProgress] = useState(null);
+
+  /* ── Past runs (longitudinal comparison) ── */
+  const [pastRuns, setPastRuns] = useState([]);
+  const loadPastRuns = useCallback(() => {
+    backtestApi.runs(10).then((res) => setPastRuns(res?.runs ?? [])).catch(() => {});
+  }, []);
+  useEffect(() => { loadPastRuns(); }, [loadPastRuns]);
 
   const wfTimer  = useRef(null);
   const edgeTimer = useRef(null);
+  const { subscribe } = useSocket();
+
+  /* Real per-symbol progress during a walk-forward / signal-edge run, pushed from the
+   * server as each symbol finishes (BACKTEST_CONCURRENCY workers in parallel) — replaces
+   * the elapsed-timer-only "is this even doing anything" feedback with an actual count. */
+  useEffect(() => subscribe(SOCKET_EVENTS.BACKTEST_PROGRESS, (data) => {
+    if (data?.kind === 'signal-edge') setEdgeProgress(data);
+    else setWfProgress(data);
+  }), [subscribe]);
 
   /* Fetch recent BUY signals for quick-fill */
   useEffect(() => {
@@ -525,17 +729,20 @@ export default function Backtest() {
     setWfError(null);
     setWfResult(null);
     setWfElapsed(0);
+    setWfProgress(null);
     wfTimer.current = setInterval(() => setWfElapsed((n) => n + 1), 1000);
     try {
       const res = await backtestApi.run({ useWatchlist: true, modes: wfModes, period: wfPeriod });
       setWfResult(res);
+      loadPastRuns(); // this run just persisted server-side — refresh the comparison list
     } catch (err) {
       setWfError(err.message ?? 'Walk-forward failed');
     } finally {
       clearInterval(wfTimer.current);
       setWfLoading(false);
+      setWfProgress(null);
     }
-  }, [wfModes, wfPeriod]);
+  }, [wfModes, wfPeriod, loadPastRuns]);
 
   /* ── Signal Edge run ── */
   const runSignalEdge = useCallback(async () => {
@@ -543,6 +750,7 @@ export default function Backtest() {
     setEdgeError(null);
     setEdgeResult(null);
     setEdgeElapsed(0);
+    setEdgeProgress(null);
     edgeTimer.current = setInterval(() => setEdgeElapsed((n) => n + 1), 1000);
     try {
       const res = await backtestApi.signalEdge({ useWatchlist: true, period: wfPeriod });
@@ -552,6 +760,7 @@ export default function Backtest() {
     } finally {
       clearInterval(edgeTimer.current);
       setEdgeLoading(false);
+      setEdgeProgress(null);
     }
   }, [wfPeriod]);
 
@@ -799,7 +1008,9 @@ export default function Backtest() {
               {wfLoading ? (
                 <>
                   <Spinner size={14} />
-                  <span>Running… <ElapsedTimer seconds={wfElapsed} /></span>
+                  <span>
+                    {wfProgress ? `${wfProgress.completed}/${wfProgress.total}…` : 'Running…'} <ElapsedTimer seconds={wfElapsed} />
+                  </span>
                 </>
               ) : (
                 '▶ Run on Watchlist'
@@ -816,12 +1027,24 @@ export default function Backtest() {
           {wfLoading && (
             <div className="card flex items-center gap-4 py-6">
               <Spinner size={24} />
-              <div>
-                <p className="text-sm text-slate-300">Processing watchlist symbols…</p>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Each symbol fetches 2 years of OHLCV from Python, runs indicators + gates, and simulates trades.
-                  Typically 30–120 seconds depending on watchlist size. <ElapsedTimer seconds={wfElapsed} />
+              <div className="flex-1">
+                <p className="text-sm text-slate-300">
+                  {wfProgress
+                    ? `Processed ${wfProgress.completed} of ${wfProgress.total} symbols — last: ${wfProgress.symbol}`
+                    : 'Processing watchlist symbols…'}
                 </p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Each symbol fetches 2 years of OHLCV from Python, runs indicators + gates, and simulates trades
+                  ({wfProgress ? 'running in parallel' : 'typically 30–120 seconds depending on watchlist size'}). <ElapsedTimer seconds={wfElapsed} />
+                </p>
+                {wfProgress && (
+                  <div className="mt-2 h-1.5 rounded-full bg-slate-700/50 overflow-hidden">
+                    <div
+                      className="h-full bg-accent transition-all duration-300"
+                      style={{ width: `${Math.min(100, Math.round((wfProgress.completed / Math.max(1, wfProgress.total)) * 100))}%` }}
+                    />
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -850,6 +1073,16 @@ export default function Backtest() {
               <div className="card">
                 <BucketTable results={wfResult.results} modes={wfResult.modes} />
               </div>
+
+              {/* Stability check — overfitting guard on the score-bucket calibration above */}
+              <div className="card">
+                <StabilityPanel results={wfResult.results} modes={wfResult.modes} />
+              </div>
+
+              {/* Equity curve — does the edge build up steadily, or ride on a few big trades? */}
+              <div className="card">
+                <EquityCurveChart results={wfResult.results} modes={wfResult.modes} />
+              </div>
             </div>
           )}
 
@@ -861,6 +1094,13 @@ export default function Backtest() {
                 Each bar is scored by the same gates and Simons signals used in live scanning.
                 Compare hold modes and identify which score thresholds historically outperform.
               </p>
+            </div>
+          )}
+
+          {/* Past runs — has calibration drifted since last time? */}
+          {pastRuns.length > 0 && (
+            <div className="card">
+              <PastRunsPanel runs={pastRuns} />
             </div>
           )}
 
@@ -881,7 +1121,9 @@ export default function Backtest() {
                 {edgeLoading ? (
                   <>
                     <Spinner size={13} />
-                    <span>Analysing… <ElapsedTimer seconds={edgeElapsed} /></span>
+                    <span>
+                      {edgeProgress ? `${edgeProgress.completed}/${edgeProgress.total}…` : 'Analysing…'} <ElapsedTimer seconds={edgeElapsed} />
+                    </span>
                   </>
                 ) : (
                   '⟳ Run Signal Edge'
@@ -896,7 +1138,11 @@ export default function Backtest() {
             {edgeLoading && (
               <div className="flex items-center gap-3 py-4 text-slate-400 text-sm">
                 <Spinner size={18} />
-                <span>Running adaptive-mode backtest, extracting per-flag outcomes… <ElapsedTimer seconds={edgeElapsed} /></span>
+                <span>
+                  {edgeProgress
+                    ? `Processed ${edgeProgress.completed} of ${edgeProgress.total} symbols — last: ${edgeProgress.symbol}`
+                    : 'Running adaptive-mode backtest, extracting per-flag outcomes…'} <ElapsedTimer seconds={edgeElapsed} />
+                </span>
               </div>
             )}
 
