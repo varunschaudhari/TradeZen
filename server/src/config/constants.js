@@ -175,11 +175,34 @@ export const BULLISH_CANDLE_PATTERNS = Object.freeze([
 // historically; the external signals (FII/PEAD/promoter/sector/sentiment/PCR/candle/MACD)
 // remain scored so they contribute the day real data is wired — but the BUY threshold is
 // calibrated to what price signals alone can reach (see SCORE_HIGH_CONFIDENCE).
+//
+// RSI_SWEET_SPOT / RS_STRONG_LEADER / RSI_OVERBOUGHT re-signed 2026-08-21: the 2026-06
+// calibration (comments above/below reference it) measured these on a single 2y/40-symbol
+// window. Re-run on the current 68-symbol watchlist found all three signs INVERTED
+// (RSI_SWEET_SPOT +0.17R → −0.44R, RS_STRONG_LEADER +0.12R → −0.41R, RSI_OVERBOUGHT
+// −0.17R → +0.44R). Before touching the weights, the 2y window was split into two
+// independent ~7-month calendar periods to tell "durable re-signed edge" apart from
+// "single-window overfit" (same failure mode as re-optimizing on one backtest repeatedly):
+//   - RSI_SWEET_SPOT: −0.11R then −0.85R — negative in BOTH periods, worsening. Durable.
+//   - RSI_OVERBOUGHT:  +0.11R then +0.85R — positive in BOTH periods, strengthening. Durable.
+//   - RS_STRONG_LEADER: +0.01R (flat) then −0.91R — flips sign. NOT durable — this is the
+//     overfitting signature, not a real inverted edge, so it's zeroed rather than flipped.
+// MOMENTUM_6M_POSITIVE added 2026-08-28: gateChecker's canonical scorer never scored 6-month
+// momentum at all (simonsSignals.js computes it but that file's own SIMONS_POINTS is
+// informational-only, not read by calculateCompositeScore) — a real gap, since this is the
+// one signal from the whole re-signing exercise that held a CONSISTENT positive sign in
+// both period-split halves (+0.21R, then +0.16R — no flip, unlike RS_STRONG_LEADER). Kept
+// modest (fires on just over half of trades — MOM6M_POSITIVE is "return > 0", a broad
+// condition) so it nudges rather than dominates the score.
 export const COMPOSITE_POINTS = Object.freeze({
   // ── Measured price-signal edge (drive the score today) ──
-  RSI_SWEET_SPOT: 10, // +0.17R lift — strongest measured signal (was only a gate, unscored)
-  RS_STRONG_LEADER: 8, // +0.12R lift — TOP RS tier only (rs ≥ 1.3); plain leaders were dilutive
+  RSI_OVERBOUGHT: 10, // consistently POSITIVE across both sub-periods — was miscalibrated as a penalty
+  MOMENTUM_6M_POSITIVE: 6, // +0.21R then +0.16R across periods — durable, previously unscored
   NEAR_52W_HIGH: 4, // only when paired with a healthy (non-overbought) RSI — raw proximity was dilutive
+  // RS_STRONG_LEADER: durable direction unmeasurable (flat → negative across periods) — zeroed,
+  // not flipped, until it shows a consistent sign. Kept as a key (not deleted) so gateChecker's
+  // rule lookup stays defined; see decisionQuality/backtest re-checks before ever re-enabling.
+  RS_STRONG_LEADER: 0,
   // ── External signals (fire only once their data feeds are wired) ──
   FII_BUYING: 8,
   PROMOTER_INCREASE: 7,
@@ -190,7 +213,7 @@ export const COMPOSITE_POINTS = Object.freeze({
   BULLISH_CANDLE: 3,
   MACD_RISING: 2,
   // ── Penalties (measured-dilutive conditions) ──
-  RSI_OVERBOUGHT: -8, // −0.17R lift — buying overbought hurt
+  RSI_SWEET_SPOT: -8, // consistently NEGATIVE across both sub-periods — was miscalibrated as a bonus
   BB_OVERBOUGHT: -8, // −0.20R lift — the most dilutive condition (was −3)
   FII_SELLING: -10,
   PROMOTER_DECREASE: -8,
@@ -289,7 +312,16 @@ export const ORB_SCANNER_ENABLED = (process.env.ORB_SCANNER_ENABLED ?? 'true') =
 export const ORB_WINDOW_MINUTES = 60; // opening range = 9:15–10:15 IST
 export const ORB_SCAN_START_MINUTES = 10 * 60 + 15; // evaluate only after the OR completes
 export const ORB_SCAN_END_MINUTES = 14 * 60; // no fresh ORB alerts after 14:00 IST
-export const ORB_REL_VOLUME_MIN = 1.5; // time-adjusted relative volume gate
+// Raised from 1.5 → 3.0 (2026-08-21): retroactive check on the 36 ORB trades in the current
+// go-live evidence window (2026-07-31 onward) found relVolume genuinely separates outcomes —
+// winners averaged 3.32x vs losers' 2.82x, and slicing at >=3.0 would have shown avgNet
+// improve from -₹58.86 to -₹14.14 (n=36→12, win rate 44%→50%). Breakout-margin was checked
+// too and showed NO separation (winners/losers averaged 0.51%/0.56% — noise), so left as-is.
+// UNVALIDATED FORWARD HYPOTHESIS, not a confirmed fix: this is the same 36 trades used to
+// pick the threshold (no backtest exists for intraday to test out-of-sample), and even the
+// improved slice is still net-negative. Re-check against the next 20-30 live ORB trades
+// before trusting this cutoff — revert toward 1.5-2.0 if the improvement doesn't hold up.
+export const ORB_REL_VOLUME_MIN = 3.0; // time-adjusted relative volume gate
 export const ORB_BREAKOUT_BUFFER_PCT = 0.1; // close must clear OR high by this % (noise filter)
 export const ORB_MAX_SYMBOLS = 15; // shortlist cap per session
 // Live-quote pre-screen: skip the heavy 5m-snapshot fetch for symbols whose live price

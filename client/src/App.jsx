@@ -40,6 +40,7 @@ import Backtest from './pages/Backtest.jsx';
 import GateAnalytics from './pages/GateAnalytics.jsx';
 import Alerts from './pages/Alerts.jsx';
 import HolidayCalendar from './pages/HolidayCalendar.jsx';
+import GoalTracker from './pages/GoalTracker.jsx';
 
 /** Redirects to /login (remembering where the user was headed) when not authenticated. */
 const RequireAuth = ({ children }) => {
@@ -109,6 +110,7 @@ const App = () => (
                       <Route path="/monitor"      element={<ErrorBoundary label="Monitor"><Monitor /></ErrorBoundary>} />
                       <Route path="/positions"    element={<ErrorBoundary label="Positions"><Positions /></ErrorBoundary>} />
                       <Route path="/performance"  element={<ErrorBoundary label="Performance"><Performance /></ErrorBoundary>} />
+                      <Route path="/goal"         element={<ErrorBoundary label="Goal Tracker"><GoalTracker /></ErrorBoundary>} />
                       <Route path="/trade-ledger" element={<ErrorBoundary label="Trade Ledger"><TradeLedger /></ErrorBoundary>} />
                       <Route path="/risk-attribution" element={<ErrorBoundary label="Risk & Attribution"><RiskAttribution /></ErrorBoundary>} />
                       <Route path="/go-live-evidence" element={<ErrorBoundary label="Go-Live Evidence"><GoLiveEvidence /></ErrorBoundary>} />

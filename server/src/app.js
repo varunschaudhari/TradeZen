@@ -49,6 +49,7 @@ import alertsRouter from './routes/alerts.js';
 import intradayRouter from './routes/intraday.js';
 import disciplineRouter from './routes/discipline.js';
 import holidaysRouter from './routes/holidays.js';
+import goalRouter from './routes/goal.js';
 
 dotenv.config();
 
@@ -102,6 +103,7 @@ app.use('/api/alerts', alertsRouter);
 app.use('/api/intraday', intradayRouter);
 app.use('/api/discipline', disciplineRouter);
 app.use('/api/holidays', holidaysRouter);
+app.use('/api/goal', goalRouter);
 
 app.use(errorHandler);
 

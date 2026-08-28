@@ -331,6 +331,7 @@ export const calculateCompositeScore = (stockData, marketData, newsData, extras 
     price != null && stockData?.high52w
       ? ((stockData.high52w - price) / stockData.high52w) * 100
       : null;
+  const momentum6m = stockData?.momentum6m ?? null;
   const P = COMPOSITE_POINTS;
 
   const rules = [
@@ -340,6 +341,11 @@ export const calculateCompositeScore = (stockData, marketData, newsData, extras 
       on: rs != null && rs >= RS_STRONG_LEADER,
       pts: P.RS_STRONG_LEADER,
       label: `Relative strength ${rs} ≥ ${RS_STRONG_LEADER} (strong leader)`,
+    },
+    {
+      on: momentum6m != null && momentum6m > 0,
+      pts: P.MOMENTUM_6M_POSITIVE,
+      label: `6-month momentum ${momentum6m?.toFixed(1)}% positive`,
     },
     {
       on: proximity != null && proximity < PROXIMITY_52W_HIGH_PCT && rsiSweet,

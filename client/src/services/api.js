@@ -113,6 +113,13 @@ export const holidaysApi = {
   getAll: () => api.get('/api/holidays'),
 };
 
+export const goalApi = {
+  get:         () => api.get('/api/goal'),
+  save:  (data) => api.put('/api/goal', data),
+  clear:       () => api.delete('/api/goal'),
+  getProgress: () => api.get('/api/goal/progress'),
+};
+
 export const stocksApi = {
   getAll:      (params) => api.get('/api/stocks', { params }),
   getStats:    ()       => api.get('/api/stocks/stats'),

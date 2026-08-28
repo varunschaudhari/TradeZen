@@ -496,10 +496,17 @@ function simulateTrade(series, signalIdx, levels, holdDays) {
       if (proposed > stop) stop = proposed;
     }
   }
-  const exitPrice = series.close[last];
+  // The freshest fetched bar can have a null close (data provider hasn't settled the
+  // current/most-recent trading day's price yet, though volume already came through) —
+  // walk back to the last bar with a real close rather than let `(null - entry) / risk`
+  // coerce to a nonsense ~-entry/risk "R multiple" via JS's null->0 arithmetic coercion.
+  let timeExitIdx = last;
+  while (timeExitIdx >= entryIdx && series.close[timeExitIdx] == null) timeExitIdx -= 1;
+  if (timeExitIdx < entryIdx) return null; // no valid close anywhere in the holding window
+  const exitPrice = series.close[timeExitIdx];
   const exitR = R(exitPrice);
   const r = firstHalfR == null ? exitR : (firstHalfR + exitR) / 2;
-  return { entry, exitIdx: last, exitPrice, reason: 'TIME', rMultiple: round2(r), costInR, holdBars: held(last) };
+  return { entry, exitIdx: timeExitIdx, exitPrice, reason: 'TIME', rMultiple: round2(r), costInR, holdBars: held(timeExitIdx) };
 }
 
 /**
